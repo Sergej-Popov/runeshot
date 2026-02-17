@@ -1,5 +1,7 @@
 import {
   AbstractMesh,
+  AssetContainer,
+  AnimationGroup,
   Color3,
   Color4,
   DynamicTexture,
@@ -21,6 +23,7 @@ import {
   VertexData,
 } from "@babylonjs/core";
 import "@babylonjs/loaders/OBJ";
+import "@babylonjs/loaders/glTF";
 import {
   ammoEl,
   bossBarEl,
@@ -42,6 +45,8 @@ import {
   minimapCtx,
   minimapEl,
   smokeGrenadesEl,
+  staminaBarEl,
+  staminaTextEl,
   weaponEl,
 } from "./dom";
 import {
@@ -58,12 +63,14 @@ import {
   toggleMusic,
 } from "./audio";
 import {
+  cellKindForLevel,
   LEVELS,
+  PIT_FLOOR_HEIGHT,
   MAP,
-  PLATFORM_LEVEL_INDEX,
-  PLATFORM_PADS,
-  PLATFORM_PITS,
   enemyCountForLevel,
+  floorHeightForLevel,
+  isWallForLevel,
+  isTrampolineForLevel,
   parseNapCheat,
 } from "./game/state";
 
@@ -88,6 +95,8 @@ type EnemyEntity = {
   aiTarget: Vector3 | null;
   lastSeenPlayer: Vector3 | null;
   strafeDir: 1 | -1;
+  runAnimation: AnimationGroup | null;
+  wasMoving: boolean;
 };
 
 type EnemyShot = {
@@ -159,9 +168,16 @@ const WALL_HEIGHT = 3.8;
 const PLAYER_RADIUS = 0.22;
 const GRAVITY = 19;
 const JUMP_VELOCITY = 8.2;
-const PLATFORM_HEIGHT = 2.0;
-const PIT_DEPTH = -3.4;
+const WALK_SPEED = 4.2;
+const SPRINT_SPEED = 5.7 * 1.3;
+const SPEED_BOOST_MULT = 1.2;
+const MAX_STAMINA = 5;
+const STAMINA_DRAIN_PER_SEC = 1;
+const STAMINA_RECOVER_PER_SEC = 1;
+const STAMINA_RECOVER_UNLOCK = 1.5;
+const PIT_DEPTH = PIT_FLOOR_HEIGHT;
 const MINIMAP_SIZES = [150, 190, 230];
+const TRAMPOLINE_RADIUS = TILE_SIZE * 0.27;
 
 const SPAWN_POINTS = [
   { x: 11.5, y: 10.5 },
@@ -299,6 +315,11 @@ const pitMat = new StandardMaterial("pit", scene);
 pitMat.diffuseColor = new Color3(0.04, 0.04, 0.05);
 const platformMat = new StandardMaterial("platform", scene);
 platformMat.diffuseColor = new Color3(0.35, 0.23, 0.17);
+const stairMat = new StandardMaterial("stair", scene);
+stairMat.diffuseColor = new Color3(0.46, 0.36, 0.22);
+const trampolineMat = new StandardMaterial("trampoline", scene);
+trampolineMat.diffuseColor = new Color3(0.15, 0.15, 0.18);
+trampolineMat.emissiveColor = new Color3(0.04, 0.7, 0.6);
 const portalMat = new StandardMaterial("portal", scene);
 portalMat.diffuseColor = new Color3(0.1, 0.6, 0.95);
 portalMat.emissiveColor = new Color3(0.1, 0.8, 1.0);
@@ -380,7 +401,7 @@ let pickups: Pickup[] = [];
 let grenadeProjectiles: GrenadeProjectile[] = [];
 let grenadeBursts: GrenadeBurst[] = [];
 let smokeClouds: SmokeCloud[] = [];
-let enemyModelTemplate: TransformNode | null = null;
+let enemyModelContainer: AssetContainer | null = null;
 let enemyModelHeight = 1;
 let enemyModelId = 0;
 let portalMesh: Mesh | null = null;
@@ -407,6 +428,7 @@ let weaponMode: WeaponMode = "gun";
 let jumpQueued = false;
 let isGrounded = true;
 let verticalVelocity = 0;
+let trampolineLock = false;
 let yaw = 0;
 let pitch = 0;
 let fireCooldown = 0;
@@ -416,6 +438,8 @@ let pointerLocked = false;
 let safeSpawn = { x: 2.2, y: 2.2 };
 let lastTime = performance.now();
 let minimapSizeIndex = 1;
+let stamina = MAX_STAMINA;
+let sprintExhausted = false;
 const cheatHistory: string[] = [];
 
 function tryAcquirePointerLock(): void {
@@ -439,26 +463,26 @@ function worldToMap(pos: Vector3): { x: number; y: number } {
 }
 
 function isWallAt(mx: number, my: number): boolean {
-  if (mx < 0 || my < 0 || mx >= MAP_W || my >= MAP_H) return true;
-  return MAP[Math.floor(my)][Math.floor(mx)] === "#";
-}
-
-function tileKey(mx: number, my: number): string {
-  return `${Math.floor(mx)},${Math.floor(my)}`;
+  return isWallForLevel(currentLevel, mx, my);
 }
 
 function floorHeightAtMap(mx: number, my: number): number {
-  if (isWallAt(mx, my)) return 99;
-  if (currentLevel !== PLATFORM_LEVEL_INDEX) return 0;
-  const key = tileKey(mx, my);
-  if (PLATFORM_PADS.has(key)) return PLATFORM_HEIGHT;
-  if (PLATFORM_PITS.has(key)) return PIT_DEPTH;
-  return 0;
+  return floorHeightForLevel(currentLevel, mx, my);
 }
 
 function floorHeightAtWorld(pos: Vector3): number {
   const map = worldToMap(pos);
   return floorHeightAtMap(map.x, map.y);
+}
+
+function isOnTrampolinePad(pos: Vector3): boolean {
+  const map = worldToMap(pos);
+  if (!isTrampolineForLevel(currentLevel, map.x, map.y)) return false;
+  const cx = Math.floor(map.x) + 0.5;
+  const cy = Math.floor(map.y) + 0.5;
+  const dx = map.x - cx;
+  const dy = map.y - cy;
+  return dx * dx + dy * dy <= (TRAMPOLINE_RADIUS / TILE_SIZE) * (TRAMPOLINE_RADIUS / TILE_SIZE);
 }
 
 function canOccupyMap(mx: number, my: number, radius = PLAYER_RADIUS): boolean {
@@ -468,6 +492,10 @@ function canOccupyMap(mx: number, my: number, radius = PLAYER_RADIUS): boolean {
     isWallAt(mx - radius, my + radius) ||
     isWallAt(mx + radius, my + radius)
   );
+}
+
+function isSafeGroundAt(mx: number, my: number): boolean {
+  return floorHeightAtMap(mx, my) > PIT_DEPTH + 0.2;
 }
 
 function setCheatStatus(text: string): void {
@@ -493,6 +521,9 @@ function updateHud(): void {
   const hp = Math.max(0, Math.floor(health));
   healthTextEl.textContent = `Health: ${hp}`;
   healthBarEl.style.width = `${Math.max(0, Math.min(100, (health / maxHealth) * 100))}%`;
+  const staminaPct = Math.max(0, Math.min(100, (stamina / MAX_STAMINA) * 100));
+  staminaTextEl.textContent = `Stamina: ${Math.round(staminaPct)}%`;
+  staminaBarEl.style.width = `${staminaPct}%`;
   levelEl.textContent = `Level: ${currentLevel + 1}/${LEVELS.length}`;
   ammoEl.textContent = `Ammo: ${ammo}`;
   grenadesEl.textContent = `Grenades: ${grenades}/3`;
@@ -536,20 +567,24 @@ function drawMinimap(): void {
 
   for (let y = 0; y < MAP_H; y += 1) {
     for (let x = 0; x < MAP_W; x += 1) {
-      if (MAP[y][x] === "#") {
+      if (isWallAt(x, y)) {
         minimapCtx.fillStyle = "#5b6476";
         minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
         continue;
       }
-      if (currentLevel === PLATFORM_LEVEL_INDEX) {
-        const k = `${x},${y}`;
-        if (PLATFORM_PITS.has(k)) {
-          minimapCtx.fillStyle = "#131313";
-          minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
-        } else if (PLATFORM_PADS.has(k)) {
-          minimapCtx.fillStyle = "#8a6543";
-          minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
-        }
+      const kind = cellKindForLevel(currentLevel, x, y);
+      if (kind === "pit") {
+        minimapCtx.fillStyle = "#131313";
+        minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
+      } else if (kind === "trampoline") {
+        minimapCtx.fillStyle = "#29d4bd";
+        minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
+      } else if (kind === "stairs") {
+        minimapCtx.fillStyle = "#9f8a62";
+        minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
+      } else if (kind === "platform") {
+        minimapCtx.fillStyle = "#8a6543";
+        minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
       }
     }
   }
@@ -614,7 +649,11 @@ function disposeLevel(): void {
   levelMeshes = [];
   wallMeshes = [];
 
-  for (const enemy of enemies) enemy.mesh.dispose();
+  for (const enemy of enemies) {
+    enemy.runAnimation?.stop();
+    enemy.runAnimation?.dispose();
+    enemy.mesh.dispose();
+  }
   enemies = [];
 
   for (const shot of enemyShots) shot.mesh.dispose();
@@ -675,35 +714,48 @@ function createWall(x: number, y: number): void {
 }
 
 function createFloorTile(x: number, y: number): void {
-  const isPlatformLevel = currentLevel === PLATFORM_LEVEL_INDEX;
-  const key = `${x},${y}`;
-
-  if (isPlatformLevel && PLATFORM_PITS.has(key)) {
+  const height = floorHeightAtMap(x + 0.5, y + 0.5);
+  const kind = cellKindForLevel(currentLevel, x, y);
+  if (height <= PIT_DEPTH + 0.01) {
     const bottom = MeshBuilder.CreateBox(`pit-${x}-${y}`, { width: TILE_SIZE, depth: TILE_SIZE, height: 0.3 }, scene);
-    bottom.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, PIT_DEPTH - 0.15));
+    bottom.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, height - 0.15));
     bottom.material = pitMat;
     levelMeshes.push(bottom);
+
+    if (kind === "trampoline") {
+      const disc = MeshBuilder.CreateCylinder(`trampoline-disc-${x}-${y}`, {
+        height: 0.14,
+        diameter: TRAMPOLINE_RADIUS * 2,
+        tessellation: 32,
+      }, scene);
+      disc.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, height + 0.07));
+      disc.material = trampolineMat;
+      levelMeshes.push(disc);
+
+      const ring = MeshBuilder.CreateTorus(`trampoline-ring-${x}-${y}`, {
+        diameter: TRAMPOLINE_RADIUS * 2.12,
+        thickness: 0.08,
+        tessellation: 32,
+      }, scene);
+      ring.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, height + 0.16));
+      ring.rotation.x = Math.PI / 2;
+      ring.material = trampolineMat;
+      levelMeshes.push(ring);
+    }
     return;
   }
 
-  if (isPlatformLevel && PLATFORM_PADS.has(key)) {
-    const block = MeshBuilder.CreateBox(`platform-${x}-${y}`, { width: TILE_SIZE * 0.92, depth: TILE_SIZE * 0.92, height: PLATFORM_HEIGHT + 0.3 }, scene);
-    block.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, (PLATFORM_HEIGHT + 0.3) / 2 - 0.15));
-    block.material = platformMat;
-    levelMeshes.push(block);
-    return;
-  }
-
-  const floor = MeshBuilder.CreateBox(`floor-${x}-${y}`, { width: TILE_SIZE, depth: TILE_SIZE, height: 0.3 }, scene);
-  floor.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, -0.15));
-  floor.material = floorMat;
-  levelMeshes.push(floor);
+  const thickness = Math.max(0.3, height + 0.3);
+  const block = MeshBuilder.CreateBox(`floor-${x}-${y}`, { width: TILE_SIZE, depth: TILE_SIZE, height: thickness }, scene);
+  block.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, height - thickness / 2));
+  block.material = kind === "stairs" ? stairMat : kind === "platform" ? platformMat : floorMat;
+  levelMeshes.push(block);
 }
 
 function buildLevelGeometry(): void {
   for (let y = 0; y < MAP_H; y += 1) {
     for (let x = 0; x < MAP_W; x += 1) {
-      if (MAP[y][x] === "#") createWall(x, y);
+      if (isWallAt(x, y)) createWall(x, y);
       else createFloorTile(x, y);
     }
   }
@@ -716,59 +768,62 @@ function buildLevelGeometry(): void {
 }
 
 async function loadEnemyModelTemplate(): Promise<void> {
-  if (enemyModelTemplate) return;
+  if (enemyModelContainer) return;
 
   try {
-    const imported = await SceneLoader.ImportMeshAsync("", "/models/cat/", "12221_Cat_v1_l3.obj", scene);
-    const template = new TransformNode("cat-template-root", scene);
-    for (const mesh of imported.meshes) {
-      if (mesh.parent === null) mesh.parent = template;
-      mesh.isPickable = false;
-    }
+    const container = await SceneLoader.LoadAssetContainerAsync("/models/", "lowpoly_cat_rig__run_animation.glb", scene);
+    for (const group of container.animationGroups) group.stop();
+    enemyModelContainer = container;
 
-    template.setEnabled(false);
-    template.computeWorldMatrix(true);
-    const bounds = template.getHierarchyBoundingVectors(true);
+    const probe = container.instantiateModelsToScene((name) => `cat-probe-${name}`, false);
+    const probeRoot = new TransformNode("cat-probe-root", scene);
+    for (const root of probe.rootNodes) root.parent = probeRoot;
+    probeRoot.computeWorldMatrix(true);
+    const bounds = probeRoot.getHierarchyBoundingVectors(true);
     enemyModelHeight = Math.max(0.1, bounds.max.y - bounds.min.y);
-    enemyModelTemplate = template;
+    for (const group of probe.animationGroups) {
+      group.stop();
+      group.dispose();
+    }
+    probeRoot.dispose(false, true);
   } catch (err) {
-    console.warn("Could not load cat model from src/models/cat; using procedural cat.", err);
-    enemyModelTemplate = null;
+    console.warn("Could not load animated cat model from /models; using procedural cat.", err);
+    enemyModelContainer = null;
   }
 }
 
-function instantiateEnemyModel(type: EnemyType, pos: Vector3): TransformNode | null {
-  if (!enemyModelTemplate) return null;
+function instantiateEnemyModel(type: EnemyType, pos: Vector3): { root: TransformNode; runAnimation: AnimationGroup | null } | null {
+  if (!enemyModelContainer) return null;
   const id = enemyModelId++;
-  const clone = enemyModelTemplate.clone(`cat-model-${type}-${id}`, null) as TransformNode | null;
-  if (!clone) return null;
+  const instance = enemyModelContainer.instantiateModelsToScene((name) => `cat-${id}-${name}`, false);
 
   const actorRoot = new TransformNode(`cat-actor-${type}-${id}`, scene);
   actorRoot.position.set(pos.x, 0, pos.z);
 
-  clone.parent = actorRoot;
-  clone.setEnabled(true);
-  clone.position.set(0, 0, 0);
-  // Imported cat forward axis differs from gameplay facing axis.
-  // Keep this correction on visual child so lookAt() on actor root won't override it.
-  clone.rotation.set(-Math.PI / 2, 0, 0);
-  for (const child of clone.getChildMeshes(false)) child.isPickable = true;
+  for (const root of instance.rootNodes) root.parent = actorRoot;
+  for (const root of instance.rootNodes) {
+    if (root instanceof AbstractMesh) root.isPickable = true;
+    for (const child of root.getChildMeshes(false)) child.isPickable = true;
+  }
 
-  const targetHeight = type === "boss" ? 3.6 : type === "kitten" ? 1.45 : 2.15;
+  const targetHeight = type === "boss" ? 2.52 : type === "kitten" ? 1.02 : 1.5;
   const scale = targetHeight / enemyModelHeight;
-  clone.scaling.set(scale, scale, scale);
+  actorRoot.scaling.set(scale, scale, scale);
   actorRoot.computeWorldMatrix(true);
   const bounds = actorRoot.getHierarchyBoundingVectors(true);
   actorRoot.position.y += -bounds.min.y + 0.02;
   actorRoot.rotation.y = Math.PI;
-  return actorRoot;
+  const runAnimation = instance.animationGroups[0] ?? null;
+  if (runAnimation) runAnimation.stop();
+  for (let i = 1; i < instance.animationGroups.length; i += 1) instance.animationGroups[i].stop();
+  return { root: actorRoot, runAnimation };
 }
 
 function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
-  const pos = mapToWorld(mx, my);
+  const pos = mapToWorld(mx, my, floorHeightAtMap(mx, my));
   const importedMesh = instantiateEnemyModel(type, pos);
   if (importedMesh) {
-    const mesh = importedMesh;
+    const mesh = importedMesh.root;
     if (type === "boss") {
       return {
         mesh,
@@ -788,6 +843,8 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
         aiTarget: null,
         lastSeenPlayer: null,
         strafeDir: Math.random() < 0.5 ? -1 : 1,
+        runAnimation: importedMesh.runAnimation,
+        wasMoving: false,
       };
     }
 
@@ -810,6 +867,8 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
         aiTarget: null,
         lastSeenPlayer: null,
         strafeDir: Math.random() < 0.5 ? -1 : 1,
+        runAnimation: importedMesh.runAnimation,
+        wasMoving: false,
       };
     }
 
@@ -832,10 +891,12 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
       aiTarget: null,
       lastSeenPlayer: null,
       strafeDir: Math.random() < 0.5 ? -1 : 1,
+      runAnimation: importedMesh.runAnimation,
+      wasMoving: false,
     };
   }
 
-  const size = type === "boss" ? 1.38 : type === "kitten" ? 0.62 : 1.0;
+  const size = (type === "boss" ? 1.38 : type === "kitten" ? 0.62 : 1.0) * 0.7;
   const body = MeshBuilder.CreateSphere(`cat-body-${type}`, {
     diameterX: 1.05 * size,
     diameterY: 0.72 * size,
@@ -930,6 +991,8 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
       aiTarget: null,
       lastSeenPlayer: null,
       strafeDir: Math.random() < 0.5 ? -1 : 1,
+      runAnimation: null,
+      wasMoving: false,
     };
   }
 
@@ -952,6 +1015,8 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
       aiTarget: null,
       lastSeenPlayer: null,
       strafeDir: Math.random() < 0.5 ? -1 : 1,
+      runAnimation: null,
+      wasMoving: false,
     };
   }
 
@@ -974,6 +1039,8 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
     aiTarget: null,
     lastSeenPlayer: null,
     strafeDir: Math.random() < 0.5 ? -1 : 1,
+    runAnimation: null,
+    wasMoving: false,
   };
 }
 
@@ -994,10 +1061,15 @@ function spawnEnemiesForLevel(): void {
   for (let attempt = 0; attempt < SPAWN_POINTS.length * 5 && created < count; attempt += 1) {
     const pick = SPAWN_POINTS[(attempt + currentLevel * 3) % SPAWN_POINTS.length];
     if (isWallAt(pick.x, pick.y)) continue;
+    if (!isSafeGroundAt(pick.x, pick.y)) continue;
     if (Vector3.Distance(mapToWorld(pick.x, pick.y), playerSpawnWorld) < minSpawnDistance) continue;
     const enemy = createEnemy("normal", pick.x, pick.y);
     resolveEnemySpawnPosition(enemy, pick.x, pick.y, playerSpawnWorld, minSpawnDistance);
     if (Vector3.Distance(enemy.mesh.position, playerSpawnWorld) < minSpawnDistance) {
+      enemy.mesh.dispose();
+      continue;
+    }
+    if (!isSafeGroundAt(worldToMap(enemy.mesh.position).x, worldToMap(enemy.mesh.position).y)) {
       enemy.mesh.dispose();
       continue;
     }
@@ -1175,19 +1247,28 @@ function spawnPickupsForLevel(): void {
   const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
   const ammoCount = 4;
   const grenadeCount = 1 + Math.floor(currentLevel / 3);
+  const pickPoint = (index: number): { x: number; y: number } => {
+    for (let tries = 0; tries < PICKUP_POINTS.length; tries += 1) {
+      const p = PICKUP_POINTS[(index + tries) % PICKUP_POINTS.length];
+      if (isWallAt(p.x, p.y)) continue;
+      if (!isSafeGroundAt(p.x, p.y)) continue;
+      return p;
+    }
+    return PICKUP_POINTS[index % PICKUP_POINTS.length];
+  };
 
   for (let i = 0; i < healthCount; i += 1) {
-    const p = PICKUP_POINTS[(i + currentLevel) % PICKUP_POINTS.length];
+    const p = pickPoint(i + currentLevel);
     pickups.push(createPickupModel("health", i, p.x, p.y, 22));
   }
 
   for (let i = 0; i < ammoCount; i += 1) {
-    const p = PICKUP_POINTS[(i + currentLevel * 2 + 3) % PICKUP_POINTS.length];
+    const p = pickPoint(i + currentLevel * 2 + 3);
     pickups.push(createPickupModel("ammo", i, p.x, p.y, 10));
   }
 
   for (let i = 0; i < grenadeCount; i += 1) {
-    const p = PICKUP_POINTS[(i + currentLevel * 3 + 5) % PICKUP_POINTS.length];
+    const p = pickPoint(i + currentLevel * 3 + 5);
     pickups.push(createPickupModel("grenade", i, p.x, p.y, 1));
   }
 }
@@ -1196,7 +1277,7 @@ function resetPlayerAtSpawn(mx: number, my: number): void {
   let sx = mx;
   let sy = my;
 
-  if (!canOccupyMap(sx, sy, PLAYER_RADIUS)) {
+  if (!canOccupyMap(sx, sy, PLAYER_RADIUS) || !isSafeGroundAt(sx, sy)) {
     let found = false;
     for (let radius = 0.35; radius <= 4.2 && !found; radius += 0.3) {
       const steps = Math.max(12, Math.floor(12 + radius * 10));
@@ -1205,6 +1286,7 @@ function resetPlayerAtSpawn(mx: number, my: number): void {
         const cx = mx + Math.sin(a) * radius;
         const cy = my + Math.cos(a) * radius;
         if (!canOccupyMap(cx, cy, PLAYER_RADIUS)) continue;
+        if (!isSafeGroundAt(cx, cy)) continue;
         sx = cx;
         sy = cy;
         found = true;
@@ -1218,6 +1300,7 @@ function resetPlayerAtSpawn(mx: number, my: number): void {
   camera.position = new Vector3(world.x, floor + EYE_HEIGHT, world.z);
   verticalVelocity = 0;
   isGrounded = true;
+  trampolineLock = false;
   safeSpawn = { x: sx, y: sy };
 }
 
@@ -1250,6 +1333,8 @@ function resetRun(): void {
   ammo = 60;
   grenades = 1;
   smokeGrenades = 2;
+  stamina = MAX_STAMINA;
+  sprintExhausted = false;
   hasCannon = false;
   hasMinigun = false;
   weaponMode = "gun";
@@ -1279,6 +1364,9 @@ function setPortalActive(active: boolean): void {
 
 function killEnemy(enemy: EnemyEntity): void {
   enemy.health = 0;
+  enemy.runAnimation?.stop();
+  enemy.runAnimation?.dispose();
+  enemy.runAnimation = null;
   enemy.mesh.dispose();
   playEnemyDeathSound();
 
@@ -1592,6 +1680,7 @@ function spawnKittenNearBoss(boss: EnemyEntity): void {
     if (Vector3.Distance(world, camera.position) < 2.8) continue;
     const m = worldToMap(world);
     if (!canOccupyMap(m.x, m.y, 0.2)) continue;
+    if (!isSafeGroundAt(m.x, m.y)) continue;
     enemies.push(createEnemy("kitten", m.x, m.y));
     playCatMeowSound();
     return;
@@ -1617,9 +1706,11 @@ function resolveEnemySpawnPosition(
     const w = mapToWorld(x, y);
     return Vector3.Distance(w, avoidPos) >= minDistanceFromAvoid;
   };
-  if (canOccupyMap(mx, my, r) && isFarEnough(mx, my)) {
+  const isValidEnemyTile = (x: number, y: number): boolean => floorHeightAtMap(x, y) > PIT_DEPTH + 0.2;
+  if (canOccupyMap(mx, my, r) && isFarEnough(mx, my) && isValidEnemyTile(mx, my)) {
     const w = mapToWorld(mx, my);
     enemy.mesh.position.x = w.x;
+    enemy.mesh.position.y = floorHeightAtMap(mx, my);
     enemy.mesh.position.z = w.z;
     return;
   }
@@ -1631,9 +1722,11 @@ function resolveEnemySpawnPosition(
       const cx = mx + Math.sin(a) * radius;
       const cy = my + Math.cos(a) * radius;
       if (!canOccupyMap(cx, cy, r)) continue;
+      if (!isValidEnemyTile(cx, cy)) continue;
       if (!isFarEnough(cx, cy)) continue;
       const w = mapToWorld(cx, cy);
       enemy.mesh.position.x = w.x;
+      enemy.mesh.position.y = floorHeightAtMap(cx, cy);
       enemy.mesh.position.z = w.z;
       return;
     }
@@ -1654,27 +1747,199 @@ function rotateEnemyToward(enemy: EnemyEntity, dir: Vector3, dt: number, speed =
   enemy.mesh.rotation.y += Math.max(-speed * dt, Math.min(speed * dt, delta));
 }
 
+function setEnemyRunAnimationState(enemy: EnemyEntity, running: boolean): void {
+  if (!enemy.runAnimation) return;
+  if (enemy.wasMoving === running) return;
+  enemy.wasMoving = running;
+  if (running) {
+    enemy.runAnimation.start(true);
+  } else {
+    enemy.runAnimation.stop();
+  }
+}
+
 function tryMoveEnemy(enemy: EnemyEntity, moveDir: Vector3, amount: number): boolean {
   if (moveDir.lengthSquared() < 0.0001 || amount <= 0) return false;
   const dir = moveDir.normalize();
   const prev = enemy.mesh.position.clone();
+  const currentFloor = floorHeightAtWorld(prev);
   let moved = false;
 
   const candX = prev.add(new Vector3(dir.x * amount, 0, 0));
   const mapX = worldToMap(candX);
   if (canOccupyMap(mapX.x, mapX.y, enemyRadius(enemy))) {
-    enemy.mesh.position.x = candX.x;
-    moved = true;
+    const floorX = floorHeightAtMap(mapX.x, mapX.y);
+    if (floorX > PIT_DEPTH + 0.2 && floorX - currentFloor <= 0.66) {
+      enemy.mesh.position.x = candX.x;
+      moved = true;
+    }
   }
 
   const candZ = prev.add(new Vector3(0, 0, dir.z * amount));
   const mapZ = worldToMap(candZ);
   if (canOccupyMap(mapZ.x, mapZ.y, enemyRadius(enemy))) {
-    enemy.mesh.position.z = candZ.z;
-    moved = true;
+    const floorZ = floorHeightAtMap(mapZ.x, mapZ.y);
+    if (floorZ > PIT_DEPTH + 0.2 && floorZ - currentFloor <= 0.66) {
+      enemy.mesh.position.z = candZ.z;
+      moved = true;
+    }
   }
+  enemy.mesh.position.y = floorHeightAtWorld(enemy.mesh.position);
 
   return moved;
+}
+
+function mapCellCenterWorld(cx: number, cy: number, y = 0): Vector3 {
+  return mapToWorld(cx + 0.5, cy + 0.5, y);
+}
+
+function mapKey(x: number, y: number): string {
+  return `${x},${y}`;
+}
+
+function parseMapKey(key: string): { x: number; y: number } {
+  const [x, y] = key.split(",").map((v) => Number(v));
+  return { x, y };
+}
+
+function isEnemyWalkableCell(x: number, y: number, r: number): boolean {
+  if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
+  if (!canOccupyMap(x + 0.5, y + 0.5, r)) return false;
+  return floorHeightAtMap(x + 0.5, y + 0.5) > PIT_DEPTH + 0.2;
+}
+
+function findEnemyPathWaypoint(enemy: EnemyEntity, targetWorld: Vector3): Vector3 | null {
+  const r = enemyRadius(enemy);
+  const startMap = worldToMap(enemy.mesh.position);
+  const goalMap = worldToMap(targetWorld);
+  const sx = Math.max(0, Math.min(MAP_W - 1, Math.floor(startMap.x)));
+  const sy = Math.max(0, Math.min(MAP_H - 1, Math.floor(startMap.y)));
+  const gx = Math.max(0, Math.min(MAP_W - 1, Math.floor(goalMap.x)));
+  const gy = Math.max(0, Math.min(MAP_H - 1, Math.floor(goalMap.y)));
+
+  if (!isEnemyWalkableCell(sx, sy, r)) return null;
+  if (!isEnemyWalkableCell(gx, gy, r)) return null;
+
+  const start = mapKey(sx, sy);
+  const goal = mapKey(gx, gy);
+  if (start === goal) return mapCellCenterWorld(gx, gy, enemy.mesh.position.y);
+
+  const queue: string[] = [start];
+  const came = new Map<string, string | null>();
+  came.set(start, null);
+  const visited = new Set<string>([start]);
+
+  let bestKey = start;
+  let bestDist = Math.hypot(gx - sx, gy - sy);
+  const dirs = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+    { x: 1, y: 1 },
+    { x: -1, y: 1 },
+    { x: 1, y: -1 },
+    { x: -1, y: -1 },
+  ];
+
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    if (cur === goal) {
+      bestKey = goal;
+      break;
+    }
+
+    const c = parseMapKey(cur);
+    for (const d of dirs) {
+      const nx = c.x + d.x;
+      const ny = c.y + d.y;
+      const nk = mapKey(nx, ny);
+      if (visited.has(nk)) continue;
+      if (!isEnemyWalkableCell(nx, ny, r)) continue;
+      const curFloor = floorHeightAtMap(c.x + 0.5, c.y + 0.5);
+      const nextFloor = floorHeightAtMap(nx + 0.5, ny + 0.5);
+      if (nextFloor - curFloor > 0.66) continue;
+      if (Math.abs(d.x) + Math.abs(d.y) === 2) {
+        if (!isEnemyWalkableCell(c.x + d.x, c.y, r) || !isEnemyWalkableCell(c.x, c.y + d.y, r)) continue;
+      }
+
+      visited.add(nk);
+      came.set(nk, cur);
+      queue.push(nk);
+
+      const dist = Math.hypot(gx - nx, gy - ny);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestKey = nk;
+      }
+    }
+  }
+
+  if (!came.has(bestKey)) return null;
+  const revPath: string[] = [];
+  let cur: string | null = bestKey;
+  while (cur) {
+    revPath.push(cur);
+    cur = came.get(cur) ?? null;
+  }
+  const path = revPath.reverse();
+  const nextKey = path[Math.min(1, path.length - 1)];
+  const next = parseMapKey(nextKey);
+  return mapCellCenterWorld(next.x, next.y, enemy.mesh.position.y);
+}
+
+function rotateY(dir: Vector3, angle: number): Vector3 {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return new Vector3(dir.x * c - dir.z * s, 0, dir.x * s + dir.z * c);
+}
+
+function computeEnemySteerDirection(enemy: EnemyEntity, desiredTarget: Vector3): Vector3 {
+  const raw = desiredTarget.subtract(enemy.mesh.position);
+  raw.y = 0;
+  if (raw.lengthSquared() < 0.0001) return Vector3.Zero();
+  const desired = raw.normalize();
+  const r = enemyRadius(enemy);
+  const ahead = enemy.mesh.position.add(desired.scale(1.0));
+  const aheadMap = worldToMap(ahead);
+  if (canOccupyMap(aheadMap.x, aheadMap.y, r)) return desired;
+
+  const samples = [0, -0.25, 0.25, -0.45, 0.45, -0.7, 0.7, -1.0, 1.0, -1.25, 1.25, Math.PI];
+  let bestDir: Vector3 | null = null;
+  let bestScore = -99999;
+  for (const a of samples) {
+    const cand = rotateY(desired, a);
+    const p = enemy.mesh.position.add(cand.scale(0.95));
+    const m = worldToMap(p);
+    if (!canOccupyMap(m.x, m.y, r)) continue;
+
+    let clearance = 0;
+    const step = r * 1.9;
+    for (const ox of [-step, 0, step]) {
+      for (const oy of [-step, 0, step]) {
+        if (!isWallAt(m.x + ox, m.y + oy)) clearance += 1;
+      }
+    }
+    const progress = cand.dot(desired);
+    const targetDist = Vector3.Distance(p, desiredTarget);
+    const score = progress * 2.8 + clearance * 0.22 - targetDist * 0.05;
+    if (score > bestScore) {
+      bestScore = score;
+      bestDir = cand;
+    }
+  }
+
+  return bestDir ?? desired;
+}
+
+function computeNavigatedMoveDir(enemy: EnemyEntity, desiredTarget: Vector3): Vector3 {
+  const from = enemy.mesh.position.add(new Vector3(0, 0.7, 0));
+  const to = new Vector3(desiredTarget.x, enemy.mesh.position.y + 0.7, desiredTarget.z);
+  if (lineOfSight(from, to)) return computeEnemySteerDirection(enemy, desiredTarget);
+
+  const waypoint = findEnemyPathWaypoint(enemy, desiredTarget);
+  if (waypoint) return computeEnemySteerDirection(enemy, waypoint);
+  return computeEnemySteerDirection(enemy, desiredTarget);
 }
 
 function pickRoamTarget(enemy: EnemyEntity): Vector3 | null {
@@ -1800,26 +2065,30 @@ function updateEnemies(dt: number): void {
       retargetEnemyAi(enemy, playerPos, canSee, dist);
     }
 
-    let moveDir = new Vector3(0, 0, 0);
+    let desiredTarget: Vector3 | null = null;
     const desiredMinDist = enemy.type === "boss" ? 2.3 : enemy.type === "kitten" ? 0.8 : 2.0;
     const desiredMaxDist = enemy.type === "boss" ? 8.5 : enemy.type === "kitten" ? 1.6 : 10.0;
 
     if (enemy.aiMode === "push") {
-      if (dist > desiredMinDist) moveDir = dirToPlayer;
+      if (dist > desiredMinDist) desiredTarget = playerPos;
     } else if (enemy.aiMode === "retreat") {
-      if (dist < desiredMaxDist) moveDir = dirToPlayer.scale(-1);
+      if (dist < desiredMaxDist) desiredTarget = enemy.mesh.position.add(dirToPlayer.scale(-4.8));
     } else if (enemy.aiMode === "strafe") {
       const side = new Vector3(dirToPlayer.z, 0, -dirToPlayer.x).scale(enemy.strafeDir);
       let keep = new Vector3(0, 0, 0);
       if (dist > desiredMaxDist) keep = dirToPlayer.scale(0.45);
       else if (dist < desiredMinDist) keep = dirToPlayer.scale(-0.45);
-      moveDir = side.add(keep);
+      desiredTarget = enemy.mesh.position.add(side.scale(3.2)).add(keep.scale(2.0));
     } else {
       const target = enemy.aiTarget;
       if (target) {
-        moveDir = target.subtract(enemy.mesh.position);
-        moveDir.y = 0;
+        desiredTarget = target;
       }
+    }
+
+    let moveDir = new Vector3(0, 0, 0);
+    if (desiredTarget) {
+      moveDir = computeNavigatedMoveDir(enemy, desiredTarget);
     }
 
     const moveScale =
@@ -1828,6 +2097,7 @@ function updateEnemies(dt: number): void {
       enemy.aiMode === "hide" ? 0.9 :
       enemy.aiMode === "roam" ? 0.75 : 1.0;
     const moved = tryMoveEnemy(enemy, moveDir, enemy.speed * moveScale * dt);
+    setEnemyRunAnimationState(enemy, moved);
 
     if (!moved && enemy.aiMode !== "push" && enemy.type !== "kitten") enemy.aiTimer = 0;
 
@@ -2050,7 +2320,22 @@ function updatePlayer(dt: number): void {
   if (wanted.lengthSquared() > 0.001) {
     wanted.normalize();
     const sprintHeld = input.ShiftLeft || input.ShiftRight;
-    const speed = (speedBoost ? 6.8 : sprintHeld ? 5.7 : 4.2) * dt;
+    const canSprint = sprintHeld && !sprintExhausted && stamina > 0;
+    const sprinting = canSprint;
+    let speedPerSec = sprinting ? SPRINT_SPEED : WALK_SPEED;
+    if (speedBoost) speedPerSec *= SPEED_BOOST_MULT;
+    const speed = speedPerSec * dt;
+
+    if (sprinting) {
+      stamina = Math.max(0, stamina - STAMINA_DRAIN_PER_SEC * dt);
+      if (stamina <= 0.001) {
+        stamina = 0;
+        sprintExhausted = true;
+      }
+    } else {
+      stamina = Math.min(MAX_STAMINA, stamina + STAMINA_RECOVER_PER_SEC * dt);
+      if (sprintExhausted && stamina >= STAMINA_RECOVER_UNLOCK) sprintExhausted = false;
+    }
 
     const currentFloor = floorHeightAtWorld(camera.position);
 
@@ -2069,6 +2354,9 @@ function updatePlayer(dt: number): void {
     }
 
     gunBobTime += dt * 8;
+  } else {
+    stamina = Math.min(MAX_STAMINA, stamina + STAMINA_RECOVER_PER_SEC * dt);
+    if (sprintExhausted && stamina >= STAMINA_RECOVER_UNLOCK) sprintExhausted = false;
   }
 
   if (jumpQueued && isGrounded && !gameOver && !victory) {
@@ -2083,10 +2371,19 @@ function updatePlayer(dt: number): void {
   const floor = floorHeightAtWorld(camera.position) + EYE_HEIGHT;
   if (camera.position.y <= floor) {
     camera.position.y = floor;
-    verticalVelocity = 0;
-    isGrounded = true;
+    const onTrampoline = isOnTrampolinePad(camera.position);
+    if (onTrampoline && !trampolineLock && !gameOver && !victory) {
+      verticalVelocity = JUMP_VELOCITY * 1.45;
+      isGrounded = false;
+      trampolineLock = true;
+    } else {
+      verticalVelocity = 0;
+      isGrounded = true;
+      if (!onTrampoline) trampolineLock = false;
+    }
   } else {
     isGrounded = false;
+    trampolineLock = false;
   }
 
   if (isGrounded && floorHeightAtWorld(camera.position) >= 0) {
@@ -2145,6 +2442,9 @@ function clearEnemiesCheat(): void {
   for (const enemy of enemies) {
     if (enemy.health <= 0) continue;
     enemy.health = 0;
+    enemy.runAnimation?.stop();
+    enemy.runAnimation?.dispose();
+    enemy.runAnimation = null;
     enemy.mesh.dispose();
   }
   setPortalActive(true);
@@ -2186,6 +2486,8 @@ function runCheat(raw: string): void {
     ammo = 220;
     grenades = 3;
     smokeGrenades = 2;
+    stamina = MAX_STAMINA;
+    sprintExhausted = false;
     setCheatStatus("Health and ammo maxed");
     addCheatHistory("catnip", "restored");
     updateHud();

@@ -11,6 +11,8 @@ if (!minimapCtx) throw new Error("Failed to initialize minimap 2D context");
 
 export const healthTextEl = requiredById<HTMLElement>("healthText");
 export const healthBarEl = requiredById<HTMLElement>("healthBar");
+export const staminaTextEl = requiredById<HTMLElement>("staminaText");
+export const staminaBarEl = requiredById<HTMLElement>("staminaBar");
 export const levelEl = requiredById<HTMLElement>("level");
 export const ammoEl = requiredById<HTMLElement>("ammo");
 export const grenadesEl = requiredById<HTMLElement>("grenades");
