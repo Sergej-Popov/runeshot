@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Doom With Cats</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="ui">
+    <div class="title">DOOM WITH CATS</div>
+    <div class="stats">
+      <div class="health-group">
+        <span id="healthText">Health: 100</span>
+        <div class="health-track">
+          <div id="healthBar" class="health-bar"></div>
+        </div>
+      </div>
+      <span id="ammo">Ammo: 24</span>
+      <span id="enemy">Cat Fiends: 0/0</span>
+    </div>
+    <div class="help">
+      Move: WASD | Turn: Mouse / Arrow Keys | Shoot: Click / Space | Restart: R
+    </div>
+  </div>
+
+  <canvas id="game" width="960" height="540"></canvas>
+
+  <script src="src/main.js"></script>
+</body>
+</html>
