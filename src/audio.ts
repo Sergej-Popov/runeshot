@@ -12,6 +12,9 @@ const music = new Audio("assets/music/doom1.mp3");
 music.loop = true;
 music.volume = 0.35;
 let musicEnabled = true;
+const enemyDeathMeow = new Audio(new URL("./audio/robot-cat-meow.wav", import.meta.url).toString());
+enemyDeathMeow.preload = "auto";
+enemyDeathMeow.volume = 0.57;
 
 export function initAudio(): void {
   if (!audioCtx) {
@@ -101,8 +104,12 @@ export function playCatMeowSound(): void {
 }
 
 export function playEnemyDeathSound(): void {
-  playTone({ type: "sawtooth", startFreq: 220, endFreq: 110, duration: 0.14, gain: 0.07 });
-  playTone({ startFreq: 900, endFreq: 180, duration: 0.12, gain: 0.035, noise: true });
+  const clip = enemyDeathMeow.cloneNode(true) as HTMLAudioElement;
+  clip.volume = enemyDeathMeow.volume;
+  void clip.play().catch(() => {
+    playTone({ type: "sawtooth", startFreq: 220, endFreq: 110, duration: 0.14, gain: 0.07 });
+    playTone({ startFreq: 900, endFreq: 180, duration: 0.12, gain: 0.035, noise: true });
+  });
 }
 
 export function playPlayerDeathSound(): void {
@@ -118,4 +125,15 @@ export function playPortalSound(): void {
 export function playPickupSound(): void {
   playTone({ type: "triangle", startFreq: 760, endFreq: 980, duration: 0.08, gain: 0.05 });
   playTone({ type: "triangle", startFreq: 920, endFreq: 1220, duration: 0.08, gain: 0.04 });
+}
+
+export function playGrenadeBounceSound(): void {
+  playTone({ type: "triangle", startFreq: 520, endFreq: 210, duration: 0.05, gain: 0.045 });
+  playTone({ startFreq: 1400, endFreq: 340, duration: 0.04, gain: 0.025, noise: true });
+}
+
+export function playGrenadeExplodeSound(): void {
+  playTone({ type: "sawtooth", startFreq: 140, endFreq: 48, duration: 0.22, gain: 0.12 });
+  playTone({ startFreq: 1700, endFreq: 120, duration: 0.2, gain: 0.09, noise: true });
+  playTone({ type: "triangle", startFreq: 260, endFreq: 90, duration: 0.18, gain: 0.06 });
 }

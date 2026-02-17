@@ -18,6 +18,8 @@
       </div>
       <span id="level">Level: 1</span>
       <span id="ammo">Ammo: 24</span>
+      <span id="grenades">Grenades: 0/3</span>
+      <span id="smokeGrenades">Smoke: 0/2</span>
       <span id="weapon">Weapon: Gun</span>
       <span id="enemy">Cat Fiends: 0/0</span>
     </div>
@@ -28,7 +30,7 @@
       </div>
     </div>
     <div class="help">
-      Move: WASD | Turn: Mouse / Arrow Keys | Jump: Space | Shoot: Hold Left Click | Switch Weapon: E | Minimap Size: N | Cheats: Tab | Level 4: Jump Platforms | Music: M | Restart: R
+      Move: WASD | Sprint: Hold Shift | Turn: Mouse / Arrow Keys | Jump: Space | Shoot: Hold Left Click | Grenade: Right Click | Smoke Grenade: Middle Click | Switch Weapon: E | Minimap Size: N | Cheats: Tab | Level 4: Jump Platforms | Music: M | Restart: R
     </div>
     <div id="cheatBadges" class="cheat-badges hidden"></div>
   </div>
@@ -37,10 +39,19 @@
     <div class="cheat-title">Cat Console</div>
     <div id="cheatStatus" class="cheat-status">Type a cheat and press Enter</div>
     <div id="cheatHistory" class="cheat-history"></div>
-    <input id="cheatInput" class="cheat-input" type="text" autocomplete="off" spellcheck="false" placeholder="/help / meow / furball / catnip / zoomies / hiss / resetcheats">
+    <input id="cheatInput" class="cheat-input" type="text" autocomplete="off" spellcheck="false" placeholder="/help / meow / furball / catnip / zoomies / hiss / nap4 / resetcheats">
+  </div>
+
+  <div id="grenadeChargeHud" class="grenade-charge hidden">
+    <span class="grenade-charge-label">Grenade Power</span>
+    <div class="grenade-charge-track">
+      <div id="grenadeChargeBar" class="grenade-charge-bar"></div>
+    </div>
   </div>
 
   <canvas id="game" width="960" height="540"></canvas>
+  <div class="crosshair" aria-hidden="true"></div>
+  <canvas id="minimap" class="minimap" width="190" height="190"></canvas>
 
   <script type="module" src="/src/main.ts"></script>
 </body>

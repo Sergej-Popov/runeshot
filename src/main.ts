@@ -1,132 +1,1843 @@
 import {
-  canvas,
-  ctx,
-  healthTextEl,
-  healthBarEl,
-  levelEl,
+  AbstractMesh,
+  Color3,
+  Color4,
+  DynamicTexture,
+  Engine,
+  HemisphericLight,
+  Mesh,
+  MeshBuilder,
+  ParticleSystem,
+  PointLight,
+  Ray,
+  Scene,
+  StandardMaterial,
+  Texture,
+  TransformNode,
+  UniversalCamera,
+  Vector3,
+  VertexData,
+} from "@babylonjs/core";
+import {
   ammoEl,
-  weaponEl,
-  enemyEl,
+  bossBarEl,
   bossHudEl,
   bossTextEl,
-  bossBarEl,
-  cheatConsoleEl,
-  cheatStatusEl,
+  canvas,
   cheatBadgesEl,
+  cheatConsoleEl,
   cheatHistoryEl,
   cheatInputEl,
+  cheatStatusEl,
+  enemyEl,
+  grenadeChargeBarEl,
+  grenadeChargeHudEl,
+  grenadesEl,
+  healthBarEl,
+  healthTextEl,
+  levelEl,
+  minimapCtx,
+  minimapEl,
+  smokeGrenadesEl,
+  weaponEl,
 } from "./dom";
 import {
-  MAP,
-  MAP_W,
-  MAP_H,
-  FOV,
-  HALF_FOV,
-  RAY_COUNT,
-  MAX_DEPTH,
-  PLAYER,
-  LEVELS,
-  SPAWN_POINTS,
-  PICKUP_POINTS,
-  PLATFORM_LEVEL_INDEX,
-  PLATFORM_PADS,
-  PLATFORM_PITS,
-  PLATFORM_PAD_LIST,
-  PLATFORM_PIT_LIST,
-  ENEMY_TEMPLATE,
-  GRAVITY,
-  JUMP_VELOCITY,
-  MINIMAP_SIZES,
-} from "./config";
-import {
   initAudio,
-  toggleMusic,
-  playGunSound,
   playCannonSound,
   playCatMeowSound,
   playEnemyDeathSound,
+  playGrenadeBounceSound,
+  playGrenadeExplodeSound,
+  playGunSound,
+  playPickupSound,
   playPlayerDeathSound,
   playPortalSound,
-  playPickupSound,
+  toggleMusic,
 } from "./audio";
-import type { CannonBurst, Enemy, EnemyShot, InputState, Pickup, Portal, WeaponMode } from "./types";
+import {
+  LEVELS,
+  MAP,
+  PLATFORM_LEVEL_INDEX,
+  PLATFORM_PADS,
+  PLATFORM_PITS,
+  enemyCountForLevel,
+  parseNapCheat,
+} from "./game/state";
+
+type WeaponMode = "gun" | "cannon" | "minigun";
+type EnemyType = "normal" | "boss" | "kitten";
+
+type EnemyEntity = {
+  mesh: Mesh;
+  type: EnemyType;
+  health: number;
+  maxHealth: number;
+  speed: number;
+  meleeDamage: number;
+  meleeCooldown: number;
+  shootCooldown: number;
+  shootDelay: number;
+  bulletSpeed: number;
+  rangedDamage: number;
+  spawnCooldown: number;
+};
+
+type EnemyShot = {
+  mesh: Mesh;
+  velocity: Vector3;
+  life: number;
+  damage: number;
+};
+
+type PickupKind = "health" | "ammo" | "grenade";
+type Pickup = {
+  mesh: Mesh;
+  kind: PickupKind;
+  amount: number;
+  haloA: Mesh;
+  haloB: Mesh;
+  glow: Mesh;
+  light: PointLight;
+  systems: ParticleSystem[];
+  baseY: number;
+  phase: number;
+};
+
+type GrenadeProjectile = {
+  mesh: Mesh;
+  velocity: Vector3;
+  life: number;
+  bouncesRemaining: number;
+  kind: "explosive" | "smoke";
+};
+
+type GrenadeBurst = {
+  mesh: Mesh;
+  light: PointLight;
+  life: number;
+  flashLife: number;
+  radius: number;
+  systems: ParticleSystem[];
+  cleanupAt: number;
+  stopped: boolean;
+};
+
+type SmokeCloud = {
+  systems: ParticleSystem[];
+  life: number;
+  cleanupAt: number;
+  stopped: boolean;
+};
+
+type InputState = {
+  KeyW: boolean;
+  KeyA: boolean;
+  KeyS: boolean;
+  KeyD: boolean;
+  ShiftLeft: boolean;
+  ShiftRight: boolean;
+  ArrowLeft: boolean;
+  ArrowRight: boolean;
+  Space: boolean;
+  MouseLeft: boolean;
+  MouseRight: boolean;
+};
+
+const TILE_SIZE = 2;
+const MAP_W = MAP[0].length;
+const MAP_H = MAP.length;
+const EYE_HEIGHT = 1.35;
+const WALL_HEIGHT = 3.8;
+const PLAYER_RADIUS = 0.22;
+const GRAVITY = 19;
+const JUMP_VELOCITY = 8.2;
+const PLATFORM_HEIGHT = 2.0;
+const PIT_DEPTH = -3.4;
+const MINIMAP_SIZES = [150, 190, 230];
+
+const SPAWN_POINTS = [
+  { x: 11.5, y: 10.5 },
+  { x: 12.5, y: 3.5 },
+  { x: 8.5, y: 12.5 },
+  { x: 4.5, y: 9.5 },
+  { x: 3.5, y: 5.5 },
+  { x: 6.5, y: 2.5 },
+  { x: 10.5, y: 6.5 },
+  { x: 13.2, y: 11.2 },
+  { x: 9.5, y: 4.5 },
+  { x: 5.5, y: 13.2 },
+  { x: 2.8, y: 10.8 },
+  { x: 12.8, y: 8.2 },
+];
+
+const PICKUP_POINTS = [
+  { x: 3.2, y: 3.2 },
+  { x: 6.8, y: 3.4 },
+  { x: 10.8, y: 3.6 },
+  { x: 13.0, y: 6.0 },
+  { x: 12.6, y: 10.6 },
+  { x: 9.2, y: 12.6 },
+  { x: 5.0, y: 12.8 },
+  { x: 3.0, y: 9.6 },
+  { x: 7.8, y: 8.0 },
+  { x: 11.5, y: 7.8 },
+];
 
 const input: InputState = {
   KeyW: false,
   KeyA: false,
   KeyS: false,
   KeyD: false,
+  ShiftLeft: false,
+  ShiftRight: false,
   ArrowLeft: false,
   ArrowRight: false,
   Space: false,
-  jumpRequested: false,
   MouseLeft: false,
-  shootRequested: false,
+  MouseRight: false,
 };
 
-const enemies: Enemy[] = [];
-const enemyShots: EnemyShot[] = [];
-const pickups: Pickup[] = [];
-const cannonBursts: CannonBurst[] = [];
+const engine = new Engine(canvas, true);
+const scene = new Scene(engine);
+scene.clearColor = new Color4(0.05, 0.06, 0.09, 1);
 
-let lastTime = 0;
-let fireCooldown = 0;
-let muzzleFlash = 0;
-let recoilKick = 0;
+const camera = new UniversalCamera("player", new Vector3(0, EYE_HEIGHT, 0), scene);
+camera.minZ = 0.05;
+camera.fov = Math.PI / 3;
+camera.inputs.clear();
+scene.activeCamera = camera;
+
+const light = new HemisphericLight("sun", new Vector3(0.35, 1, 0.2), scene);
+light.intensity = 0.98;
+
+const skybox = MeshBuilder.CreateSphere(
+  "sky-dome",
+  { diameter: 900, segments: 32, sideOrientation: VertexData.BACKSIDE },
+  scene,
+);
+const skyboxMat = new StandardMaterial("skybox-mat", scene);
+skyboxMat.backFaceCulling = false;
+skyboxMat.disableLighting = true;
+skyboxMat.specularColor = new Color3(0, 0, 0);
+const skyTex = new DynamicTexture("skybox-tex", { width: 2048, height: 1024 }, scene, false);
+const skyCtx = skyTex.getContext();
+const grad = skyCtx.createLinearGradient(0, 0, 0, 1024);
+grad.addColorStop(0, "#111a33");
+grad.addColorStop(0.5, "#22345a");
+grad.addColorStop(1, "#5e7fa6");
+skyCtx.fillStyle = grad;
+skyCtx.fillRect(0, 0, 2048, 1024);
+for (let i = 0; i < 240; i += 1) {
+  const x = Math.random() * 2048;
+  const y = Math.random() * 700;
+  const r = Math.random() * 1.6 + 0.2;
+  skyCtx.fillStyle = `rgba(255,255,255,${0.35 + Math.random() * 0.65})`;
+  skyCtx.beginPath();
+  skyCtx.arc(x, y, r, 0, Math.PI * 2);
+  skyCtx.fill();
+}
+skyTex.update(false);
+skyTex.wrapU = Texture.WRAP_ADDRESSMODE;
+skyTex.wrapV = Texture.CLAMP_ADDRESSMODE;
+skyboxMat.emissiveTexture = skyTex;
+skyboxMat.diffuseTexture = skyTex;
+skybox.material = skyboxMat;
+skybox.infiniteDistance = true;
+
+const wallMat = new StandardMaterial("wall", scene);
+wallMat.diffuseColor = new Color3(0.33, 0.33, 0.4);
+wallMat.backFaceCulling = false;
+const wallTex = new DynamicTexture("wall-brick-tex", { width: 1024, height: 1024 }, scene, false);
+const wallCtx = wallTex.getContext();
+wallCtx.fillStyle = "#6a4a3a";
+wallCtx.fillRect(0, 0, 1024, 1024);
+
+const brickH = 64;
+const brickW = 128;
+for (let row = 0; row < 16; row += 1) {
+  const y = row * brickH;
+  const offset = (row % 2) * (brickW / 2);
+  for (let x = -brickW; x < 1024 + brickW; x += brickW) {
+    const bx = x + offset;
+    const tint = 92 + Math.floor(Math.random() * 36);
+    wallCtx.fillStyle = `rgb(${tint + 28}, ${tint + 8}, ${tint - 6})`;
+    wallCtx.fillRect(bx + 2, y + 2, brickW - 4, brickH - 4);
+
+    wallCtx.fillStyle = "rgba(255,255,255,0.08)";
+    wallCtx.fillRect(bx + 8, y + 8, brickW - 24, 6);
+    wallCtx.fillStyle = "rgba(0,0,0,0.15)";
+    wallCtx.fillRect(bx + 6, y + brickH - 12, brickW - 16, 5);
+  }
+}
+
+wallCtx.strokeStyle = "rgba(40,28,22,0.65)";
+wallCtx.lineWidth = 2;
+for (let y = 0; y <= 1024; y += brickH) {
+  wallCtx.beginPath();
+  wallCtx.moveTo(0, y);
+  wallCtx.lineTo(1024, y);
+  wallCtx.stroke();
+}
+
+wallTex.update(false);
+wallTex.wrapU = Texture.WRAP_ADDRESSMODE;
+wallTex.wrapV = Texture.WRAP_ADDRESSMODE;
+wallTex.vScale = 1.2;
+wallMat.diffuseTexture = wallTex;
+wallMat.specularColor = new Color3(0.08, 0.08, 0.08);
+const floorMat = new StandardMaterial("floor", scene);
+floorMat.diffuseColor = new Color3(0.2, 0.2, 0.24);
+const pitMat = new StandardMaterial("pit", scene);
+pitMat.diffuseColor = new Color3(0.04, 0.04, 0.05);
+const platformMat = new StandardMaterial("platform", scene);
+platformMat.diffuseColor = new Color3(0.35, 0.23, 0.17);
+const portalMat = new StandardMaterial("portal", scene);
+portalMat.diffuseColor = new Color3(0.1, 0.6, 0.95);
+portalMat.emissiveColor = new Color3(0.1, 0.8, 1.0);
+
+const pickupHealthBodyMat = new StandardMaterial("pickup-health-body", scene);
+pickupHealthBodyMat.diffuseColor = new Color3(0.9, 0.9, 0.92);
+const pickupHealthCrossMat = new StandardMaterial("pickup-health-cross", scene);
+pickupHealthCrossMat.diffuseColor = new Color3(0.9, 0.18, 0.2);
+pickupHealthCrossMat.emissiveColor = new Color3(0.35, 0.06, 0.06);
+
+const pickupAmmoBodyMat = new StandardMaterial("pickup-ammo-body", scene);
+pickupAmmoBodyMat.diffuseColor = new Color3(0.2, 0.26, 0.32);
+const pickupGrenadeBodyMat = new StandardMaterial("pickup-grenade-body", scene);
+pickupGrenadeBodyMat.diffuseColor = new Color3(0.2, 0.34, 0.2);
+const pickupAmmoAccentMat = new StandardMaterial("pickup-ammo-accent", scene);
+pickupAmmoAccentMat.diffuseColor = new Color3(0.85, 0.67, 0.25);
+pickupAmmoAccentMat.emissiveColor = new Color3(0.2, 0.14, 0.03);
+const pickupGrenadeAccentMat = new StandardMaterial("pickup-grenade-accent", scene);
+pickupGrenadeAccentMat.diffuseColor = new Color3(0.68, 0.88, 0.32);
+pickupGrenadeAccentMat.emissiveColor = new Color3(0.22, 0.35, 0.1);
+
+const pickupAuraHealthMat = new StandardMaterial("pickup-aura-health", scene);
+pickupAuraHealthMat.emissiveColor = new Color3(0.5, 1.0, 0.65);
+pickupAuraHealthMat.diffuseColor = new Color3(0.18, 0.35, 0.22);
+pickupAuraHealthMat.alpha = 0.24;
+
+const pickupAuraAmmoMat = new StandardMaterial("pickup-aura-ammo", scene);
+pickupAuraAmmoMat.emissiveColor = new Color3(0.45, 0.86, 1.0);
+pickupAuraAmmoMat.diffuseColor = new Color3(0.12, 0.25, 0.35);
+pickupAuraAmmoMat.alpha = 0.24;
+
+const pickupSparkHealthMat = new StandardMaterial("pickup-spark-health", scene);
+pickupSparkHealthMat.emissiveColor = new Color3(0.7, 1.0, 0.78);
+pickupSparkHealthMat.diffuseColor = new Color3(0.2, 0.45, 0.25);
+
+const pickupSparkAmmoMat = new StandardMaterial("pickup-spark-ammo", scene);
+pickupSparkAmmoMat.emissiveColor = new Color3(0.62, 0.9, 1.0);
+pickupSparkAmmoMat.diffuseColor = new Color3(0.16, 0.3, 0.44);
+
+const grenadeFlameMat = new StandardMaterial("grenade-flame", scene);
+grenadeFlameMat.emissiveColor = new Color3(1.0, 0.62, 0.2);
+grenadeFlameMat.diffuseColor = new Color3(0.78, 0.3, 0.08);
+const grenadeSmokeMat = new StandardMaterial("grenade-smoke", scene);
+grenadeSmokeMat.emissiveColor = new Color3(0.22, 0.16, 0.12);
+grenadeSmokeMat.diffuseColor = new Color3(0.18, 0.16, 0.15);
+grenadeSmokeMat.alpha = 0.5;
+const smokeParticleTex = new DynamicTexture("smoke-particle-tex", { width: 128, height: 128 }, scene, false);
+const smokeCtx = smokeParticleTex.getContext();
+const smokeGrad = smokeCtx.createRadialGradient(64, 64, 8, 64, 64, 62);
+smokeGrad.addColorStop(0, "rgba(255,255,255,0.95)");
+smokeGrad.addColorStop(0.35, "rgba(210,210,210,0.72)");
+smokeGrad.addColorStop(0.75, "rgba(120,120,120,0.32)");
+smokeGrad.addColorStop(1, "rgba(30,30,30,0)");
+smokeCtx.fillStyle = smokeGrad;
+smokeCtx.fillRect(0, 0, 128, 128);
+for (let i = 0; i < 120; i += 1) {
+  smokeCtx.fillStyle = `rgba(255,255,255,${Math.random() * 0.06})`;
+  smokeCtx.beginPath();
+  smokeCtx.arc(Math.random() * 128, Math.random() * 128, Math.random() * 2.8 + 0.4, 0, Math.PI * 2);
+  smokeCtx.fill();
+}
+smokeParticleTex.update(false);
+const fireParticleTex = new DynamicTexture("fire-particle-tex", { width: 128, height: 128 }, scene, false);
+const fireCtx = fireParticleTex.getContext();
+const fireGrad = fireCtx.createRadialGradient(64, 64, 4, 64, 64, 62);
+fireGrad.addColorStop(0, "rgba(255,255,230,1)");
+fireGrad.addColorStop(0.22, "rgba(255,190,80,0.95)");
+fireGrad.addColorStop(0.55, "rgba(255,95,25,0.7)");
+fireGrad.addColorStop(1, "rgba(40,10,0,0)");
+fireCtx.fillStyle = fireGrad;
+fireCtx.fillRect(0, 0, 128, 128);
+fireParticleTex.update(false);
+
+let levelMeshes: AbstractMesh[] = [];
+let wallMeshes: AbstractMesh[] = [];
+let enemies: EnemyEntity[] = [];
+let enemyShots: EnemyShot[] = [];
+let pickups: Pickup[] = [];
+let grenadeProjectiles: GrenadeProjectile[] = [];
+let grenadeBursts: GrenadeBurst[] = [];
+let smokeClouds: SmokeCloud[] = [];
+let portalMesh: Mesh | null = null;
+let gunRoot: TransformNode | null = null;
+let gunSlide: Mesh | null = null;
+let gunBobTime = 0;
+let recoil = 0;
+
+let currentLevel = 0;
+let health = 100;
+let maxHealth = 100;
+let ammo = 60;
+let grenades = 1;
+let smokeGrenades = 2;
+let portalActive = false;
 let gameOver = false;
 let victory = false;
-let currentLevel = 0;
-let portalActive = false;
-let portal: Portal = { x: 13.5, y: 13.5, radius: 0.45 };
-let hasPointerLock = false;
-let cheatOpen = false;
-let godMode = false;
 let speedBoost = false;
-const cheatHistory: string[] = [];
+let godMode = false;
+let cheatOpen = false;
+let hasCannon = false;
+let hasMinigun = false;
+let weaponMode: WeaponMode = "gun";
+let jumpQueued = false;
+let isGrounded = true;
+let verticalVelocity = 0;
+let yaw = 0;
+let pitch = 0;
+let fireCooldown = 0;
+let grenadeCooldown = 0;
+let grenadeChargeStart = 0;
+let pointerLocked = false;
+let safeSpawn = { x: 2.2, y: 2.2 };
+let lastTime = performance.now();
 let minimapSizeIndex = 1;
+const cheatHistory: string[] = [];
 
-function isWall(x, y) {
-  if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return true;
-  return MAP[Math.floor(y)][Math.floor(x)] === "#";
+function tryAcquirePointerLock(): void {
+  if (cheatOpen) return;
+  if (document.pointerLockElement === canvas) return;
+  const req = canvas.requestPointerLock();
+  if (req && typeof req.catch === "function") {
+    req.catch(() => {});
+  }
 }
 
-function normalizeAngle(a) {
-  while (a < -Math.PI) a += Math.PI * 2;
-  while (a > Math.PI) a -= Math.PI * 2;
-  return a;
+function mapToWorld(mx: number, my: number, y = 0): Vector3 {
+  return new Vector3((mx - MAP_W / 2) * TILE_SIZE, y, (my - MAP_H / 2) * TILE_SIZE);
 }
 
-function toggleWeapon() {
-  const modes: WeaponMode[] = ["gun"];
-  if (PLAYER.hasCannon) modes.push("cannon");
-  if (PLAYER.hasMinigun) modes.push("minigun");
-  if (modes.length <= 1) return;
-
-  const idx = modes.indexOf(PLAYER.weaponMode);
-  PLAYER.weaponMode = modes[(idx + 1) % modes.length];
-  updateHud();
+function worldToMap(pos: Vector3): { x: number; y: number } {
+  return {
+    x: pos.x / TILE_SIZE + MAP_W / 2,
+    y: pos.z / TILE_SIZE + MAP_H / 2,
+  };
 }
 
-function cycleMinimapZoom() {
-  minimapSizeIndex = (minimapSizeIndex + 1) % MINIMAP_SIZES.length;
+function isWallAt(mx: number, my: number): boolean {
+  if (mx < 0 || my < 0 || mx >= MAP_W || my >= MAP_H) return true;
+  return MAP[Math.floor(my)][Math.floor(mx)] === "#";
 }
 
-function setCheatStatus(text) {
+function tileKey(mx: number, my: number): string {
+  return `${Math.floor(mx)},${Math.floor(my)}`;
+}
+
+function floorHeightAtMap(mx: number, my: number): number {
+  if (isWallAt(mx, my)) return 99;
+  if (currentLevel !== PLATFORM_LEVEL_INDEX) return 0;
+  const key = tileKey(mx, my);
+  if (PLATFORM_PADS.has(key)) return PLATFORM_HEIGHT;
+  if (PLATFORM_PITS.has(key)) return PIT_DEPTH;
+  return 0;
+}
+
+function floorHeightAtWorld(pos: Vector3): number {
+  const map = worldToMap(pos);
+  return floorHeightAtMap(map.x, map.y);
+}
+
+function canOccupyMap(mx: number, my: number, radius = PLAYER_RADIUS): boolean {
+  return !(
+    isWallAt(mx - radius, my - radius) ||
+    isWallAt(mx + radius, my - radius) ||
+    isWallAt(mx - radius, my + radius) ||
+    isWallAt(mx + radius, my + radius)
+  );
+}
+
+function setCheatStatus(text: string): void {
   cheatStatusEl.textContent = text;
 }
 
-function addCheatHistory(command, result) {
+function addCheatHistory(command: string, result: string): void {
   cheatHistory.unshift(`${command} -> ${result}`);
-  if (cheatHistory.length > 3) cheatHistory.length = 3;
-  cheatHistoryEl.innerHTML = cheatHistory.map((line) => `<div>${line}</div>`).join("");
+  if (cheatHistory.length > 4) cheatHistory.length = 4;
+  cheatHistoryEl.innerHTML = cheatHistory.map((row) => `<div>${row}</div>`).join("");
 }
 
-function toggleCheatConsole() {
+function updateCheatBadges(): void {
+  const badges: string[] = [];
+  if (godMode) badges.push("FURBALL");
+  if (speedBoost) badges.push("ZOOMIES");
+  if (hasMinigun) badges.push("MEOW");
+  cheatBadgesEl.classList.toggle("hidden", badges.length === 0);
+  cheatBadgesEl.innerHTML = badges.map((b) => `<span class=\"cheat-badge\">${b}</span>`).join("");
+}
+
+function updateHud(): void {
+  const hp = Math.max(0, Math.floor(health));
+  healthTextEl.textContent = `Health: ${hp}`;
+  healthBarEl.style.width = `${Math.max(0, Math.min(100, (health / maxHealth) * 100))}%`;
+  levelEl.textContent = `Level: ${currentLevel + 1}/${LEVELS.length}`;
+  ammoEl.textContent = `Ammo: ${ammo}`;
+  grenadesEl.textContent = `Grenades: ${grenades}/3`;
+  smokeGrenadesEl.textContent = `Smoke: ${smokeGrenades}/2`;
+  weaponEl.textContent = `Weapon: ${weaponMode[0].toUpperCase()}${weaponMode.slice(1)}`;
+
+  const alive = enemies.filter((e) => e.health > 0).length;
+  enemyEl.textContent = portalActive ? "Portal: Enter!" : `Cat Fiends: ${alive}/${enemies.length}`;
+
+  const boss = enemies.find((e) => e.type === "boss" && e.health > 0);
+  bossHudEl.classList.toggle("hidden", !boss);
+  if (boss) {
+    bossTextEl.textContent = `Boss HP: ${Math.ceil(boss.health)}/${Math.ceil(boss.maxHealth)}`;
+    bossBarEl.style.width = `${Math.max(0, Math.min(100, (boss.health / boss.maxHealth) * 100))}%`;
+  }
+
+  updateCheatBadges();
+}
+
+function setGrenadeChargeHud(active: boolean, power01 = 0): void {
+  grenadeChargeHudEl.classList.toggle("hidden", !active);
+  grenadeChargeBarEl.style.width = `${Math.max(0, Math.min(100, power01 * 100))}%`;
+}
+
+function applyMinimapSize(): void {
+  const size = MINIMAP_SIZES[minimapSizeIndex];
+  minimapEl.width = size;
+  minimapEl.height = size;
+  minimapEl.style.width = `${size}px`;
+  minimapEl.style.height = `${size}px`;
+}
+
+function drawMinimap(): void {
+  const size = minimapEl.width;
+  const cell = size / MAP_W;
+  const toMiniY = (mapY: number): number => size - mapY * cell;
+
+  minimapCtx.clearRect(0, 0, size, size);
+  minimapCtx.fillStyle = "rgba(10, 14, 20, 0.9)";
+  minimapCtx.fillRect(0, 0, size, size);
+
+  for (let y = 0; y < MAP_H; y += 1) {
+    for (let x = 0; x < MAP_W; x += 1) {
+      if (MAP[y][x] === "#") {
+        minimapCtx.fillStyle = "#5b6476";
+        minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
+        continue;
+      }
+      if (currentLevel === PLATFORM_LEVEL_INDEX) {
+        const k = `${x},${y}`;
+        if (PLATFORM_PITS.has(k)) {
+          minimapCtx.fillStyle = "#131313";
+          minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
+        } else if (PLATFORM_PADS.has(k)) {
+          minimapCtx.fillStyle = "#8a6543";
+          minimapCtx.fillRect(x * cell, toMiniY(y + 1), cell, cell);
+        }
+      }
+    }
+  }
+
+  if (portalMesh && portalMesh.isVisible) {
+    const mp = worldToMap(portalMesh.position);
+    minimapCtx.fillStyle = "#22d4ff";
+    minimapCtx.beginPath();
+    minimapCtx.arc(mp.x * cell, toMiniY(mp.y), Math.max(3, cell * 0.28), 0, Math.PI * 2);
+    minimapCtx.fill();
+  }
+
+  for (const enemy of enemies) {
+    if (enemy.health <= 0) continue;
+    const mp = worldToMap(enemy.mesh.position);
+    minimapCtx.fillStyle = enemy.type === "boss" ? "#ff5a2f" : enemy.type === "kitten" ? "#ffd17a" : "#ff7a7a";
+    minimapCtx.beginPath();
+    minimapCtx.arc(mp.x * cell, toMiniY(mp.y), Math.max(2.5, cell * 0.22), 0, Math.PI * 2);
+    minimapCtx.fill();
+  }
+
+  const p = worldToMap(camera.position);
+  minimapCtx.fillStyle = "#f5f8ff";
+  minimapCtx.beginPath();
+  minimapCtx.arc(p.x * cell, toMiniY(p.y), Math.max(3, cell * 0.24), 0, Math.PI * 2);
+  minimapCtx.fill();
+
+  minimapCtx.strokeStyle = "#f5f8ff";
+  minimapCtx.lineWidth = 2;
+  minimapCtx.beginPath();
+  minimapCtx.moveTo(p.x * cell, toMiniY(p.y));
+  minimapCtx.lineTo((p.x + Math.sin(yaw) * 0.9) * cell, toMiniY(p.y + Math.cos(yaw) * 0.9));
+  minimapCtx.stroke();
+}
+
+function makeGunModel(): void {
+  gunRoot = new TransformNode("gun-root", scene);
+  gunRoot.parent = camera;
+  gunRoot.position = new Vector3(0.34, -0.97, 1.1);
+
+  const gunMat = new StandardMaterial("gun-mat", scene);
+  gunMat.diffuseColor = new Color3(0.2, 0.2, 0.22);
+
+  const body = MeshBuilder.CreateBox("gun-body", { width: 0.38, height: 0.2, depth: 0.9 }, scene);
+  body.parent = gunRoot;
+  body.material = gunMat;
+
+  const barrel = MeshBuilder.CreateBox("gun-barrel", { width: 0.18, height: 0.14, depth: 0.6 }, scene);
+  barrel.parent = gunRoot;
+  barrel.position = new Vector3(0, 0.03, 0.7);
+  barrel.material = gunMat;
+  gunSlide = barrel;
+
+  const rear = MeshBuilder.CreateBox("gun-rear", { width: 0.24, height: 0.12, depth: 0.18 }, scene);
+  rear.parent = gunRoot;
+  rear.position = new Vector3(0, 0.06, -0.34);
+  rear.material = gunMat;
+}
+
+function disposeLevel(): void {
+  for (const mesh of [...levelMeshes, ...wallMeshes]) mesh.dispose();
+  levelMeshes = [];
+  wallMeshes = [];
+
+  for (const enemy of enemies) enemy.mesh.dispose();
+  enemies = [];
+
+  for (const shot of enemyShots) shot.mesh.dispose();
+  enemyShots = [];
+  for (const grenade of grenadeProjectiles) grenade.mesh.dispose();
+  grenadeProjectiles = [];
+  for (const burst of grenadeBursts) {
+    for (const sys of burst.systems) sys.dispose();
+    burst.light.dispose();
+    burst.mesh.dispose();
+  }
+  grenadeBursts = [];
+  for (const cloud of smokeClouds) {
+    for (const sys of cloud.systems) sys.dispose();
+  }
+  smokeClouds = [];
+
+  for (const pickup of pickups) {
+    for (const sys of pickup.systems) sys.dispose();
+    pickup.light.dispose();
+    pickup.mesh.dispose();
+  }
+  pickups = [];
+
+  if (portalMesh) {
+    portalMesh.dispose();
+    portalMesh = null;
+  }
+}
+
+function createWall(x: number, y: number): void {
+  const cx = (x + 0.5 - MAP_W / 2) * TILE_SIZE;
+  const cz = (y + 0.5 - MAP_H / 2) * TILE_SIZE;
+  const py = WALL_HEIGHT / 2;
+  const half = TILE_SIZE / 2;
+
+  const makeFace = (name: string, px: number, pz: number, rotY: number): void => {
+    const face = MeshBuilder.CreatePlane(
+      name,
+      { width: TILE_SIZE, height: WALL_HEIGHT },
+      scene,
+    );
+    face.position = new Vector3(px, py, pz);
+    face.rotation.y = rotY;
+    face.material = wallMat;
+    wallMeshes.push(face);
+  };
+
+  if (!isWallAt(x, y - 1)) makeFace(`wall-n-${x}-${y}`, cx, cz - half, Math.PI);
+  if (!isWallAt(x, y + 1)) makeFace(`wall-s-${x}-${y}`, cx, cz + half, 0);
+  if (!isWallAt(x - 1, y)) makeFace(`wall-w-${x}-${y}`, cx - half, cz, Math.PI / 2);
+  if (!isWallAt(x + 1, y)) makeFace(`wall-e-${x}-${y}`, cx + half, cz, -Math.PI / 2);
+
+  const top = MeshBuilder.CreateGround(`wall-top-${x}-${y}`, { width: TILE_SIZE, height: TILE_SIZE }, scene);
+  top.position = new Vector3(cx, WALL_HEIGHT, cz);
+  top.material = wallMat;
+  wallMeshes.push(top);
+}
+
+function createFloorTile(x: number, y: number): void {
+  const isPlatformLevel = currentLevel === PLATFORM_LEVEL_INDEX;
+  const key = `${x},${y}`;
+
+  if (isPlatformLevel && PLATFORM_PITS.has(key)) {
+    const bottom = MeshBuilder.CreateBox(`pit-${x}-${y}`, { width: TILE_SIZE, depth: TILE_SIZE, height: 0.3 }, scene);
+    bottom.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, PIT_DEPTH - 0.15));
+    bottom.material = pitMat;
+    levelMeshes.push(bottom);
+    return;
+  }
+
+  if (isPlatformLevel && PLATFORM_PADS.has(key)) {
+    const block = MeshBuilder.CreateBox(`platform-${x}-${y}`, { width: TILE_SIZE * 0.92, depth: TILE_SIZE * 0.92, height: PLATFORM_HEIGHT + 0.3 }, scene);
+    block.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, (PLATFORM_HEIGHT + 0.3) / 2 - 0.15));
+    block.material = platformMat;
+    levelMeshes.push(block);
+    return;
+  }
+
+  const floor = MeshBuilder.CreateBox(`floor-${x}-${y}`, { width: TILE_SIZE, depth: TILE_SIZE, height: 0.3 }, scene);
+  floor.position.copyFrom(mapToWorld(x + 0.5, y + 0.5, -0.15));
+  floor.material = floorMat;
+  levelMeshes.push(floor);
+}
+
+function buildLevelGeometry(): void {
+  for (let y = 0; y < MAP_H; y += 1) {
+    for (let x = 0; x < MAP_W; x += 1) {
+      if (MAP[y][x] === "#") createWall(x, y);
+      else createFloorTile(x, y);
+    }
+  }
+
+  const portal = LEVELS[currentLevel].portal;
+  portalMesh = MeshBuilder.CreateTorus("portal", { diameter: 1.9, thickness: 0.24, tessellation: 24 }, scene);
+  portalMesh.position.copyFrom(mapToWorld(portal.x, portal.y, 1.5));
+  portalMesh.material = portalMat;
+  portalMesh.isVisible = false;
+}
+
+function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
+  const pos = mapToWorld(mx, my);
+  const size = type === "boss" ? 1.38 : type === "kitten" ? 0.62 : 1.0;
+  const body = MeshBuilder.CreateSphere(`cat-body-${type}`, {
+    diameterX: 1.05 * size,
+    diameterY: 0.72 * size,
+    diameterZ: 1.55 * size,
+    segments: 12,
+  }, scene);
+  body.position.y = 0.52 * size;
+
+  const head = MeshBuilder.CreateSphere(`cat-head-${type}`, {
+    diameterX: 0.64 * size,
+    diameterY: 0.58 * size,
+    diameterZ: 0.58 * size,
+    segments: 12,
+  }, scene);
+  head.position.y = 0.84 * size;
+  head.position.z = 0.62 * size;
+
+  const earL = MeshBuilder.CreateCylinder(`cat-earl-${type}`, {
+    height: 0.3 * size,
+    diameterTop: 0.01 * size,
+    diameterBottom: 0.2 * size,
+    tessellation: 3,
+  }, scene);
+  earL.position = new Vector3(-0.15 * size, 1.14 * size, 0.73 * size);
+  earL.rotation.z = 0.08;
+  earL.rotation.x = -0.1;
+
+  const earR = earL.clone(`cat-earr-${type}`)!;
+  earR.position.x = 0.15 * size;
+  earR.rotation.z = -0.08;
+
+  const tail = MeshBuilder.CreateCylinder(`cat-tail-${type}`, {
+    height: 0.68 * size,
+    diameterTop: 0.1 * size,
+    diameterBottom: 0.14 * size,
+    tessellation: 8,
+  }, scene);
+  tail.position = new Vector3(0, 0.68 * size, -0.82 * size);
+  tail.rotation.x = Math.PI / 2.6;
+
+  const pawA = MeshBuilder.CreateBox(`cat-paw-a-${type}`, {
+    width: 0.2 * size,
+    height: 0.16 * size,
+    depth: 0.2 * size,
+  }, scene);
+  pawA.position = new Vector3(-0.22 * size, 0.15 * size, 0.35 * size);
+  const pawB = pawA.clone(`cat-paw-b-${type}`)!;
+  pawB.position.x = 0.22 * size;
+  const pawC = pawA.clone(`cat-paw-c-${type}`)!;
+  pawC.position.z = -0.35 * size;
+  const pawD = pawB.clone(`cat-paw-d-${type}`)!;
+  pawD.position.z = -0.35 * size;
+
+  const parts: Mesh[] = [body, head, earL, earR, tail, pawA, pawB, pawC, pawD];
+  if (type !== "kitten") {
+    const gun = MeshBuilder.CreateBox(`cat-gun-${type}`, {
+      width: 0.2 * size,
+      height: 0.16 * size,
+      depth: 0.58 * size,
+    }, scene);
+    gun.position = new Vector3(0.34 * size, 0.54 * size, 0.52 * size);
+    gun.rotation.y = 0.08;
+    parts.push(gun);
+  }
+
+  const merged = Mesh.MergeMeshes(parts, true, true, undefined, false, true);
+  const mesh = merged ?? body;
+
+  const mat = new StandardMaterial(`enemy-${type}-mat`, scene);
+  if (type === "boss") mat.diffuseColor = new Color3(0.55, 0.45, 0.3);
+  else if (type === "kitten") mat.diffuseColor = new Color3(0.9, 0.86, 0.8);
+  else mat.diffuseColor = new Color3(0.78, 0.62, 0.49);
+  mesh.material = mat;
+  mesh.position = new Vector3(pos.x, type === "boss" ? 1.0 : type === "kitten" ? 0.56 : 0.72, pos.z);
+
+  if (type === "boss") {
+    return {
+      mesh,
+      type,
+      health: 42,
+      maxHealth: 42,
+      speed: 1.3,
+      meleeDamage: 22,
+      meleeCooldown: 0.8,
+      shootCooldown: 0.5,
+      shootDelay: 0.85,
+      bulletSpeed: 13.5,
+      rangedDamage: 20,
+      spawnCooldown: 3.8,
+    };
+  }
+
+  if (type === "kitten") {
+    return {
+      mesh,
+      type,
+      health: 1,
+      maxHealth: 1,
+      speed: 5.3,
+      meleeDamage: 8,
+      meleeCooldown: 0.3,
+      shootCooldown: 999,
+      shootDelay: 999,
+      bulletSpeed: 0,
+      rangedDamage: 0,
+      spawnCooldown: 999,
+    };
+  }
+
+  const levelScale = currentLevel + 1;
+  return {
+    mesh,
+    type,
+    health: 2 + levelScale,
+    maxHealth: 2 + levelScale,
+    speed: 1.8 + Math.min(1.2, currentLevel * 0.14),
+    meleeDamage: 8 + currentLevel * 2,
+    meleeCooldown: 0.2,
+    shootCooldown: 0.8,
+    shootDelay: Math.max(0.42, 1.05 - currentLevel * 0.08),
+    bulletSpeed: Math.max(8.5, 11.6 - (currentLevel === 3 ? 1.6 : 0)),
+    rangedDamage: 8 + currentLevel * 2,
+    spawnCooldown: 999,
+  };
+}
+
+function spawnEnemiesForLevel(): void {
+  const config = LEVELS[currentLevel];
+  if (config.bossFight) {
+    enemies.push(createEnemy("boss", 11.5, 8.0));
+    return;
+  }
+
+  const count = enemyCountForLevel(currentLevel);
+  for (let i = 0; i < count; i += 1) {
+    const pick = SPAWN_POINTS[(i + currentLevel * 3) % SPAWN_POINTS.length];
+    if (!isWallAt(pick.x, pick.y)) enemies.push(createEnemy("normal", pick.x, pick.y));
+  }
+}
+
+function createPickupModel(kind: PickupKind, id: number, mx: number, my: number, amount: number): Pickup {
+  const floor = floorHeightAtMap(mx, my);
+  const root = MeshBuilder.CreateBox(`pickup-root-${kind}-${id}`, { size: 0.12 }, scene);
+  root.isVisible = false;
+  root.isPickable = false;
+  root.position.copyFrom(mapToWorld(mx, my, floor + 0.4));
+
+  const crate = MeshBuilder.CreateBox(`pickup-crate-${kind}-${id}`, {
+    width: 0.54,
+    height: 0.44,
+    depth: 0.54,
+  }, scene);
+  crate.parent = root;
+  crate.material = kind === "health" ? pickupHealthBodyMat : kind === "ammo" ? pickupAmmoBodyMat : pickupGrenadeBodyMat;
+
+  if (kind === "health") {
+    const crossV = MeshBuilder.CreateBox(`pickup-health-v-${id}`, { width: 0.13, height: 0.28, depth: 0.06 }, scene);
+    crossV.parent = root;
+    crossV.position = new Vector3(0, 0, 0.3);
+    crossV.material = pickupHealthCrossMat;
+
+    const crossH = MeshBuilder.CreateBox(`pickup-health-h-${id}`, { width: 0.28, height: 0.13, depth: 0.06 }, scene);
+    crossH.parent = root;
+    crossH.position = new Vector3(0, 0, 0.3);
+    crossH.material = pickupHealthCrossMat;
+
+    const topCrossV = crossV.clone(`pickup-health-top-v-${id}`)!;
+    topCrossV.position = new Vector3(0, 0.23, 0);
+    topCrossV.rotation.x = Math.PI / 2;
+    const topCrossH = crossH.clone(`pickup-health-top-h-${id}`)!;
+    topCrossH.position = new Vector3(0, 0.23, 0);
+    topCrossH.rotation.x = Math.PI / 2;
+  } else if (kind === "ammo") {
+    const strap = MeshBuilder.CreateBox(`pickup-ammo-strap-${id}`, { width: 0.58, height: 0.08, depth: 0.18 }, scene);
+    strap.parent = root;
+    strap.position.y = 0.08;
+    strap.material = pickupAmmoAccentMat;
+
+    for (let i = 0; i < 3; i += 1) {
+      const round = MeshBuilder.CreateCylinder(`pickup-ammo-round-${id}-${i}`, {
+        height: 0.2,
+        diameter: 0.08,
+        tessellation: 10,
+      }, scene);
+      round.parent = root;
+      round.position = new Vector3(-0.12 + i * 0.12, 0.24, 0);
+      round.rotation.z = Math.PI / 2;
+      round.material = pickupAmmoAccentMat;
+    }
+  } else {
+    const body = MeshBuilder.CreateSphere(`pickup-grenade-body-${id}`, {
+      diameterX: 0.28,
+      diameterY: 0.34,
+      diameterZ: 0.28,
+      segments: 10,
+    }, scene);
+    body.parent = root;
+    body.position.y = 0.03;
+    body.material = pickupGrenadeAccentMat;
+
+    const pin = MeshBuilder.CreateTorus(`pickup-grenade-pin-${id}`, { diameter: 0.18, thickness: 0.026, tessellation: 18 }, scene);
+    pin.parent = root;
+    pin.position.y = 0.23;
+    pin.rotation.x = Math.PI / 2;
+    pin.material = pickupAmmoAccentMat;
+  }
+
+  const auraMat = kind === "health" ? pickupAuraHealthMat : kind === "ammo" ? pickupAuraAmmoMat : pickupAuraHealthMat;
+  const auraA = MeshBuilder.CreateTorus(`pickup-aura-a-${kind}-${id}`, { diameter: 1.1, thickness: 0.045, tessellation: 24 }, scene);
+  auraA.parent = root;
+  auraA.rotation.x = Math.PI / 2;
+  auraA.material = auraMat;
+
+  const auraB = MeshBuilder.CreateTorus(`pickup-aura-b-${kind}-${id}`, { diameter: 0.94, thickness: 0.04, tessellation: 24 }, scene);
+  auraB.parent = root;
+  auraB.rotation.z = Math.PI / 2;
+  auraB.material = auraMat;
+
+  const glow = MeshBuilder.CreateSphere(`pickup-glow-${kind}-${id}`, {
+    diameterX: 0.88,
+    diameterY: 0.52,
+    diameterZ: 0.88,
+    segments: 12,
+  }, scene);
+  glow.parent = root;
+  glow.material = auraMat;
+
+  const light = new PointLight(`pickup-light-${kind}-${id}`, root.position.clone(), scene);
+  light.parent = root;
+  light.diffuse = kind === "health" ? new Color3(0.42, 1.0, 0.6) : new Color3(0.32, 0.78, 1.0);
+  light.specular = light.diffuse.scale(0.8);
+  light.intensity = 1.8;
+  light.range = 6.5;
+
+  const auraColorA =
+    kind === "health"
+      ? new Color4(0.48, 1.0, 0.65, 0.42)
+      : kind === "ammo"
+        ? new Color4(0.4, 0.9, 1.0, 0.4)
+        : new Color4(0.75, 1.0, 0.5, 0.42);
+  const auraColorB =
+    kind === "health"
+      ? new Color4(0.2, 0.8, 0.45, 0.2)
+      : kind === "ammo"
+        ? new Color4(0.2, 0.55, 0.9, 0.2)
+        : new Color4(0.45, 0.8, 0.24, 0.2);
+
+  const auraSpark = new ParticleSystem(`pickup-aura-${kind}-${id}`, 260, scene);
+  auraSpark.particleTexture = smokeParticleTex;
+  auraSpark.emitter = root;
+  auraSpark.minEmitBox = new Vector3(-0.2, 0.05, -0.2);
+  auraSpark.maxEmitBox = new Vector3(0.2, 0.4, 0.2);
+  auraSpark.color1 = auraColorA;
+  auraSpark.color2 = auraColorB;
+  auraSpark.colorDead = new Color4(0, 0, 0, 0);
+  auraSpark.minSize = 0.12;
+  auraSpark.maxSize = 0.36;
+  auraSpark.minLifeTime = 0.35;
+  auraSpark.maxLifeTime = 0.85;
+  auraSpark.emitRate = 42;
+  auraSpark.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+  auraSpark.gravity = new Vector3(0, 0.15, 0);
+  auraSpark.direction1 = new Vector3(-0.3, 0.35, -0.3);
+  auraSpark.direction2 = new Vector3(0.3, 0.65, 0.3);
+  auraSpark.minEmitPower = 0.02;
+  auraSpark.maxEmitPower = 0.18;
+  auraSpark.updateSpeed = 0.02;
+  auraSpark.start();
+
+  const auraDust = new ParticleSystem(`pickup-dust-${kind}-${id}`, 200, scene);
+  auraDust.particleTexture = smokeParticleTex;
+  auraDust.emitter = root;
+  auraDust.minEmitBox = new Vector3(-0.35, -0.1, -0.35);
+  auraDust.maxEmitBox = new Vector3(0.35, 0.18, 0.35);
+  auraDust.color1 = new Color4(auraColorA.r, auraColorA.g, auraColorA.b, 0.22);
+  auraDust.color2 = new Color4(auraColorB.r, auraColorB.g, auraColorB.b, 0.14);
+  auraDust.colorDead = new Color4(0, 0, 0, 0);
+  auraDust.minSize = 0.18;
+  auraDust.maxSize = 0.45;
+  auraDust.minLifeTime = 0.7;
+  auraDust.maxLifeTime = 1.4;
+  auraDust.emitRate = 22;
+  auraDust.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  auraDust.gravity = new Vector3(0, 0.08, 0);
+  auraDust.direction1 = new Vector3(-0.18, 0.2, -0.18);
+  auraDust.direction2 = new Vector3(0.18, 0.32, 0.18);
+  auraDust.minEmitPower = 0.01;
+  auraDust.maxEmitPower = 0.08;
+  auraDust.updateSpeed = 0.02;
+  auraDust.start();
+
+  return {
+    mesh: root,
+    kind,
+    amount,
+    haloA: auraA,
+    haloB: auraB,
+    glow,
+    light,
+    systems: [auraSpark, auraDust],
+    baseY: root.position.y,
+    phase: Math.random() * Math.PI * 2,
+  };
+}
+
+function spawnPickupsForLevel(): void {
+  const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
+  const ammoCount = 4;
+  const grenadeCount = 1 + Math.floor(currentLevel / 3);
+
+  for (let i = 0; i < healthCount; i += 1) {
+    const p = PICKUP_POINTS[(i + currentLevel) % PICKUP_POINTS.length];
+    pickups.push(createPickupModel("health", i, p.x, p.y, 22));
+  }
+
+  for (let i = 0; i < ammoCount; i += 1) {
+    const p = PICKUP_POINTS[(i + currentLevel * 2 + 3) % PICKUP_POINTS.length];
+    pickups.push(createPickupModel("ammo", i, p.x, p.y, 10));
+  }
+
+  for (let i = 0; i < grenadeCount; i += 1) {
+    const p = PICKUP_POINTS[(i + currentLevel * 3 + 5) % PICKUP_POINTS.length];
+    pickups.push(createPickupModel("grenade", i, p.x, p.y, 1));
+  }
+}
+
+function resetPlayerAtSpawn(mx: number, my: number): void {
+  const world = mapToWorld(mx, my);
+  const floor = floorHeightAtMap(mx, my);
+  camera.position = new Vector3(world.x, floor + EYE_HEIGHT, world.z);
+  verticalVelocity = 0;
+  isGrounded = true;
+  safeSpawn = { x: mx, y: my };
+}
+
+function startLevel(levelIndex: number, freshRun = false): void {
+  currentLevel = levelIndex;
+  portalActive = false;
+  gameOver = false;
+  victory = false;
+
+  disposeLevel();
+  buildLevelGeometry();
+  spawnEnemiesForLevel();
+  spawnPickupsForLevel();
+
+  const spawn = LEVELS[currentLevel].playerSpawn;
+  resetPlayerAtSpawn(spawn.x, spawn.y);
+
+  if (!freshRun) {
+    health = Math.min(maxHealth, health + 18);
+    ammo = Math.min(200, ammo + 16);
+  }
+
+  if (portalMesh) portalMesh.isVisible = false;
+  setCheatStatus(`Level ${currentLevel + 1}`);
+  updateHud();
+}
+
+function resetRun(): void {
+  health = maxHealth;
+  ammo = 60;
+  grenades = 1;
+  smokeGrenades = 2;
+  hasCannon = false;
+  hasMinigun = false;
+  weaponMode = "gun";
+  speedBoost = false;
+  godMode = false;
+  startLevel(0, true);
+}
+
+function damagePlayer(amount: number): void {
+  if (godMode || gameOver) return;
+  health -= amount;
+  if (health <= 0) {
+    health = 0;
+    gameOver = true;
+    playPlayerDeathSound();
+    setCheatStatus("You got shredded. Press R to restart.");
+  }
+  updateHud();
+}
+
+function setPortalActive(active: boolean): void {
+  portalActive = active;
+  if (portalMesh) portalMesh.isVisible = active;
+  if (active) playPortalSound();
+  updateHud();
+}
+
+function killEnemy(enemy: EnemyEntity): void {
+  enemy.health = 0;
+  enemy.mesh.dispose();
+  playEnemyDeathSound();
+
+  if (enemy.type === "boss") {
+    hasCannon = true;
+    weaponMode = "cannon";
+    ammo = Math.min(220, ammo + 35);
+  }
+}
+
+function damageEnemy(enemy: EnemyEntity, amount: number): void {
+  if (enemy.health <= 0) return;
+  enemy.health -= amount;
+  if (enemy.health <= 0) {
+    killEnemy(enemy);
+    if (!portalActive && enemies.filter((e) => e.health > 0).length === 0) setPortalActive(true);
+  }
+  updateHud();
+}
+
+function findEnemyByMesh(mesh: AbstractMesh): EnemyEntity | undefined {
+  return enemies.find((e) => e.mesh === mesh && e.health > 0);
+}
+
+function fireWeapon(): void {
+  if (gameOver || victory) return;
+
+  let damage = 1;
+  let splash = 0;
+
+  if (weaponMode === "cannon") {
+    if (ammo < 2) return;
+    ammo -= 2;
+    fireCooldown = 0.58;
+    damage = 4;
+    splash = 2.2;
+    recoil = 0.17;
+    playCannonSound();
+  } else if (weaponMode === "minigun") {
+    if (ammo < 1) return;
+    ammo -= 1;
+    fireCooldown = 0.055;
+    damage = 1;
+    recoil = 0.04;
+    playGunSound();
+  } else {
+    if (ammo < 1) return;
+    ammo -= 1;
+    fireCooldown = 0.18;
+    damage = 1;
+    recoil = 0.09;
+    playGunSound();
+  }
+
+  const ray = camera.getForwardRay(60);
+  const pick = scene.pickWithRay(ray, (mesh) => Boolean(mesh && findEnemyByMesh(mesh)));
+  if (pick?.hit && pick.pickedMesh) {
+    const enemy = findEnemyByMesh(pick.pickedMesh);
+    if (enemy) {
+      damageEnemy(enemy, damage);
+      if (splash > 0) {
+        for (const other of enemies) {
+          if (other.health <= 0 || other === enemy) continue;
+          const dist = Vector3.Distance(other.mesh.position, enemy.mesh.position);
+          if (dist <= splash) damageEnemy(other, Math.max(1, damage - 1));
+        }
+      }
+    }
+  }
+
+  updateHud();
+}
+
+function explodeGrenade(at: Vector3): void {
+  playGrenadeExplodeSound();
+
+  const burstMesh = MeshBuilder.CreateSphere("grenade-burst", { diameter: 0.8, segments: 16 }, scene);
+  const burstMat = new StandardMaterial("grenade-burst-mat", scene);
+  burstMat.emissiveColor = new Color3(1.0, 0.66, 0.2);
+  burstMat.alpha = 0.45;
+  burstMesh.material = burstMat;
+  burstMesh.position.copyFrom(at);
+
+  const burstLight = new PointLight("grenade-burst-light", at.clone(), scene);
+  burstLight.diffuse = new Color3(1.0, 0.55, 0.2);
+  burstLight.intensity = 4.2;
+  burstLight.range = 10;
+
+  const radius = 3.2;
+  for (const enemy of enemies) {
+    if (enemy.health <= 0) continue;
+    const dist = Vector3.Distance(enemy.mesh.position, at);
+    if (dist > radius) continue;
+    const dmg = Math.max(2, 8 - dist * 1.8);
+    damageEnemy(enemy, dmg);
+  }
+
+  const distToPlayer = Vector3.Distance(camera.position, at);
+  if (distToPlayer < radius) {
+    damagePlayer(Math.max(0, 22 - distToPlayer * 6));
+  }
+
+  const flameBurst = new ParticleSystem("grenade-flame-burst", 420, scene);
+  flameBurst.particleTexture = fireParticleTex;
+  flameBurst.emitter = at.clone();
+  flameBurst.minEmitBox = new Vector3(-0.1, -0.05, -0.1);
+  flameBurst.maxEmitBox = new Vector3(0.1, 0.12, 0.1);
+  flameBurst.color1 = new Color4(1, 0.8, 0.35, 1);
+  flameBurst.color2 = new Color4(1, 0.38, 0.08, 0.85);
+  flameBurst.colorDead = new Color4(0.2, 0.05, 0.01, 0);
+  flameBurst.minSize = 0.24;
+  flameBurst.maxSize = 0.72;
+  flameBurst.minLifeTime = 0.22;
+  flameBurst.maxLifeTime = 0.55;
+  flameBurst.emitRate = 1200;
+  flameBurst.manualEmitCount = 250;
+  flameBurst.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+  flameBurst.gravity = new Vector3(0, -2.4, 0);
+  flameBurst.direction1 = new Vector3(-2.8, 1.4, -2.8);
+  flameBurst.direction2 = new Vector3(2.8, 2.7, 2.8);
+  flameBurst.minEmitPower = 1.2;
+  flameBurst.maxEmitPower = 4.4;
+  flameBurst.updateSpeed = 0.015;
+  flameBurst.start();
+
+  const emberBurst = new ParticleSystem("grenade-ember-burst", 360, scene);
+  emberBurst.particleTexture = fireParticleTex;
+  emberBurst.emitter = at.clone();
+  emberBurst.minEmitBox = new Vector3(-0.15, 0.02, -0.15);
+  emberBurst.maxEmitBox = new Vector3(0.15, 0.2, 0.15);
+  emberBurst.color1 = new Color4(1, 0.62, 0.15, 0.9);
+  emberBurst.color2 = new Color4(1, 0.45, 0.08, 0.8);
+  emberBurst.colorDead = new Color4(0.18, 0.08, 0.03, 0);
+  emberBurst.minSize = 0.08;
+  emberBurst.maxSize = 0.2;
+  emberBurst.minLifeTime = 0.35;
+  emberBurst.maxLifeTime = 1.05;
+  emberBurst.emitRate = 1000;
+  emberBurst.manualEmitCount = 180;
+  emberBurst.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+  emberBurst.gravity = new Vector3(0, -3.2, 0);
+  emberBurst.direction1 = new Vector3(-3.4, 0.8, -3.4);
+  emberBurst.direction2 = new Vector3(3.4, 2.1, 3.4);
+  emberBurst.minEmitPower = 1.8;
+  emberBurst.maxEmitPower = 5.0;
+  emberBurst.updateSpeed = 0.015;
+  emberBurst.start();
+
+  grenadeBursts.push({
+    mesh: burstMesh,
+    light: burstLight,
+    life: 0.34,
+    flashLife: 0.34,
+    radius,
+    systems: [flameBurst, emberBurst],
+    cleanupAt: -1.1,
+    stopped: false,
+  });
+}
+
+function explodeSmokeGrenade(at: Vector3): void {
+  const core = new ParticleSystem("smoke-core", 1300, scene);
+  core.particleTexture = smokeParticleTex;
+  core.emitter = at.clone();
+  core.minEmitBox = new Vector3(-0.25, 0.05, -0.25);
+  core.maxEmitBox = new Vector3(0.25, 0.35, 0.25);
+  core.color1 = new Color4(0.15, 0.15, 0.15, 0.72);
+  core.color2 = new Color4(0.27, 0.27, 0.27, 0.62);
+  core.colorDead = new Color4(0.1, 0.1, 0.1, 0);
+  core.minSize = 0.85;
+  core.maxSize = 2.2;
+  core.minLifeTime = 1.8;
+  core.maxLifeTime = 3.8;
+  core.emitRate = 420;
+  core.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  core.gravity = new Vector3(0, 0.36, 0);
+  core.direction1 = new Vector3(-0.65, 0.5, -0.65);
+  core.direction2 = new Vector3(0.65, 1.0, 0.65);
+  core.minAngularSpeed = -0.6;
+  core.maxAngularSpeed = 0.6;
+  core.minEmitPower = 0.08;
+  core.maxEmitPower = 0.52;
+  core.updateSpeed = 0.015;
+  core.start();
+
+  const wisps = new ParticleSystem("smoke-wisps", 900, scene);
+  wisps.particleTexture = smokeParticleTex;
+  wisps.emitter = at.clone();
+  wisps.minEmitBox = new Vector3(-0.6, 0.1, -0.6);
+  wisps.maxEmitBox = new Vector3(0.6, 0.5, 0.6);
+  wisps.color1 = new Color4(0.35, 0.35, 0.35, 0.46);
+  wisps.color2 = new Color4(0.2, 0.2, 0.2, 0.36);
+  wisps.colorDead = new Color4(0.08, 0.08, 0.08, 0);
+  wisps.minSize = 1.4;
+  wisps.maxSize = 3.6;
+  wisps.minLifeTime = 2.3;
+  wisps.maxLifeTime = 5.2;
+  wisps.emitRate = 260;
+  wisps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  wisps.gravity = new Vector3(0, 0.28, 0);
+  wisps.direction1 = new Vector3(-0.8, 0.35, -0.8);
+  wisps.direction2 = new Vector3(0.8, 0.9, 0.8);
+  wisps.minAngularSpeed = -0.35;
+  wisps.maxAngularSpeed = 0.35;
+  wisps.minEmitPower = 0.04;
+  wisps.maxEmitPower = 0.34;
+  wisps.updateSpeed = 0.017;
+  wisps.start();
+
+  smokeClouds.push({
+    systems: [core, wisps],
+    life: 3.2,
+    cleanupAt: -3.2,
+    stopped: false,
+  });
+}
+
+function throwGrenade(chargeSeconds = 0): void {
+  throwTypedGrenade("explosive", chargeSeconds);
+}
+
+function throwSmokeGrenade(): void {
+  throwTypedGrenade("smoke", 0.5);
+}
+
+function throwTypedGrenade(kind: "explosive" | "smoke", chargeSeconds = 0): void {
+  if (grenadeCooldown > 0 || gameOver || victory) return;
+  if (kind === "explosive") {
+    if (grenades <= 0) {
+      setCheatStatus("No explosive grenades");
+      return;
+    }
+    grenades -= 1;
+  } else {
+    if (smokeGrenades <= 0) {
+      setCheatStatus("No smoke grenades");
+      return;
+    }
+    smokeGrenades -= 1;
+  }
+  grenadeCooldown = 0.45;
+  updateHud();
+
+  const mesh = MeshBuilder.CreateSphere("grenade", { diameter: 0.22, segments: 10 }, scene);
+  const mat = new StandardMaterial("grenade-mat", scene);
+  mat.diffuseColor = kind === "explosive" ? new Color3(0.28, 0.45, 0.18) : new Color3(0.46, 0.46, 0.5);
+  mesh.material = mat;
+  mesh.position = camera.position.add(camera.getDirection(new Vector3(0, -0.03, 1)).normalize().scale(0.85));
+
+  const charge01 = Math.max(0, Math.min(1, chargeSeconds / 1.25));
+  const throwSpeed = 8.2 + charge01 * 13.8;
+  const throwDir = camera.getDirection(new Vector3(0, 0.12, 1)).normalize();
+  grenadeProjectiles.push({
+    mesh,
+    velocity: throwDir.scale(throwSpeed),
+    life: 1.1 + charge01 * 1.1,
+    bouncesRemaining: 5,
+    kind,
+  });
+}
+
+function spawnEnemyShot(enemy: EnemyEntity): void {
+  const from = enemy.mesh.position.add(new Vector3(0, 0.8, 0));
+  const to = camera.position.add(new Vector3(0, -0.4, 0));
+  const dir = to.subtract(from).normalize();
+
+  const mesh = MeshBuilder.CreateSphere("enemy-shot", { diameter: 0.2 }, scene);
+  const mat = new StandardMaterial("enemy-shot-mat", scene);
+  mat.emissiveColor = enemy.type === "boss" ? new Color3(1, 0.45, 0.1) : new Color3(1, 0.7, 0.2);
+  mesh.material = mat;
+  mesh.position.copyFrom(from);
+
+  enemyShots.push({
+    mesh,
+    velocity: dir.scale(enemy.bulletSpeed),
+    life: 2.2,
+    damage: enemy.rangedDamage,
+  });
+  playCatMeowSound();
+}
+
+function lineOfSight(from: Vector3, to: Vector3): boolean {
+  const dir = to.subtract(from);
+  const len = dir.length();
+  if (len <= 0.001) return true;
+
+  const ray = new Ray(from, dir.normalize(), len);
+  const hit = scene.pickWithRay(ray, (mesh) => wallMeshes.includes(mesh));
+  return !(hit?.hit && (hit.distance ?? len) < len - 0.15);
+}
+
+function spawnKittenNearBoss(boss: EnemyEntity): void {
+  const livingKittens = enemies.filter((e) => e.type === "kitten" && e.health > 0).length;
+  if (livingKittens >= 6) return;
+
+  const offsets = [
+    new Vector3(0.8, 0, 0),
+    new Vector3(-0.8, 0, 0),
+    new Vector3(0, 0, 0.8),
+    new Vector3(0, 0, -0.8),
+  ];
+
+  for (const off of offsets) {
+    const world = boss.mesh.position.add(off);
+    const m = worldToMap(world);
+    if (!canOccupyMap(m.x, m.y, 0.2)) continue;
+    enemies.push(createEnemy("kitten", m.x, m.y));
+    playCatMeowSound();
+    return;
+  }
+}
+
+function updateEnemies(dt: number): void {
+  const playerPos = camera.position.clone();
+
+  for (const enemy of enemies) {
+    if (enemy.health <= 0) continue;
+
+    const toPlayer = playerPos.subtract(enemy.mesh.position);
+    toPlayer.y = 0;
+    const dist = Math.max(0.0001, toPlayer.length());
+    const dir = toPlayer.scale(1 / dist);
+
+    const moveDist = enemy.speed * dt;
+    if (dist > (enemy.type === "kitten" ? 0.9 : 1.4)) {
+      const candidate = enemy.mesh.position.add(dir.scale(moveDist));
+      const map = worldToMap(candidate);
+      if (canOccupyMap(map.x, map.y, enemy.type === "boss" ? 0.4 : 0.22)) {
+        enemy.mesh.position.x = candidate.x;
+        enemy.mesh.position.z = candidate.z;
+      }
+    }
+
+    enemy.mesh.lookAt(new Vector3(playerPos.x, enemy.mesh.position.y, playerPos.z));
+
+    enemy.meleeCooldown -= dt;
+    const meleeRange = enemy.type === "boss" ? 1.6 : enemy.type === "kitten" ? 1.0 : 1.2;
+    if (dist <= meleeRange && enemy.meleeCooldown <= 0) {
+      damagePlayer(enemy.meleeDamage);
+      enemy.meleeCooldown = enemy.type === "kitten" ? 0.45 : 0.85;
+    }
+
+    enemy.shootCooldown -= dt;
+    if (enemy.bulletSpeed > 0 && dist < 22 && enemy.shootCooldown <= 0) {
+      const canSee = lineOfSight(enemy.mesh.position.add(new Vector3(0, 0.8, 0)), playerPos.add(new Vector3(0, -0.2, 0)));
+      if (canSee) {
+        spawnEnemyShot(enemy);
+        enemy.shootCooldown = enemy.shootDelay;
+      }
+    }
+
+    if (enemy.type === "boss") {
+      enemy.spawnCooldown -= dt;
+      if (enemy.spawnCooldown <= 0) {
+        spawnKittenNearBoss(enemy);
+        enemy.spawnCooldown = 3.8;
+      }
+    }
+  }
+}
+
+function updateEnemyShots(dt: number): void {
+  for (let i = enemyShots.length - 1; i >= 0; i -= 1) {
+    const shot = enemyShots[i];
+    shot.mesh.position.addInPlace(shot.velocity.scale(dt));
+    shot.life -= dt;
+
+    const map = worldToMap(shot.mesh.position);
+    const out = shot.life <= 0 || isWallAt(map.x, map.y);
+    if (out) {
+      shot.mesh.dispose();
+      enemyShots.splice(i, 1);
+      continue;
+    }
+
+    const dist = Vector3.Distance(shot.mesh.position, camera.position);
+    if (dist <= 0.6) {
+      damagePlayer(shot.damage);
+      shot.mesh.dispose();
+      enemyShots.splice(i, 1);
+    }
+  }
+}
+
+function updateGrenades(dt: number): void {
+  for (let i = grenadeProjectiles.length - 1; i >= 0; i -= 1) {
+    const grenade = grenadeProjectiles[i];
+    const prev = grenade.mesh.position.clone();
+    grenade.velocity.y -= GRAVITY * 0.72 * dt;
+    grenade.mesh.position.addInPlace(grenade.velocity.scale(dt));
+    grenade.mesh.rotation.x += dt * 7;
+    grenade.mesh.rotation.z += dt * 5;
+    grenade.life -= dt;
+
+    let bounced = false;
+
+    const mapX = worldToMap(new Vector3(grenade.mesh.position.x, prev.y, prev.z));
+    if (isWallAt(mapX.x, mapX.y)) {
+      grenade.mesh.position.x = prev.x;
+      grenade.velocity.x = -grenade.velocity.x * 0.72;
+      bounced = true;
+    }
+
+    const mapZ = worldToMap(new Vector3(prev.x, prev.y, grenade.mesh.position.z));
+    if (isWallAt(mapZ.x, mapZ.y)) {
+      grenade.mesh.position.z = prev.z;
+      grenade.velocity.z = -grenade.velocity.z * 0.72;
+      bounced = true;
+    }
+
+    const m = worldToMap(grenade.mesh.position);
+    const floor = floorHeightAtMap(m.x, m.y);
+    if (grenade.mesh.position.y <= floor + 0.12) {
+      grenade.mesh.position.y = floor + 0.12;
+      grenade.velocity.y = Math.abs(grenade.velocity.y) * 0.56;
+      grenade.velocity.x *= 0.82;
+      grenade.velocity.z *= 0.82;
+      bounced = true;
+    }
+
+    if (bounced) {
+      grenade.velocity.y *= 0.92;
+      grenade.bouncesRemaining -= 1;
+      const impactSpeed = Math.sqrt(
+        grenade.velocity.x * grenade.velocity.x +
+        grenade.velocity.y * grenade.velocity.y +
+        grenade.velocity.z * grenade.velocity.z,
+      );
+      if (impactSpeed > 1.35) playGrenadeBounceSound();
+    }
+
+    const tooSlowAfterBounce =
+      grenade.bouncesRemaining <= 0 ||
+      (Math.abs(grenade.velocity.y) < 0.8 && Math.hypot(grenade.velocity.x, grenade.velocity.z) < 1.2);
+
+    if (grenade.life <= 0 || tooSlowAfterBounce) {
+      const at = grenade.mesh.position.clone();
+      const kind = grenade.kind;
+      grenade.mesh.dispose();
+      grenadeProjectiles.splice(i, 1);
+      if (kind === "explosive") explodeGrenade(at);
+      else explodeSmokeGrenade(at);
+    }
+  }
+
+  for (let i = grenadeBursts.length - 1; i >= 0; i -= 1) {
+    const burst = grenadeBursts[i];
+    burst.life -= dt;
+    const t = Math.max(0, burst.life / burst.flashLife);
+    const s = 1 + (1 - t) * 5.2;
+    burst.mesh.scaling.setAll(s);
+    burst.light.intensity = 4.2 * t;
+    const mat = burst.mesh.material as StandardMaterial;
+    if (mat) mat.alpha = 0.48 * t;
+
+    if (!burst.stopped && burst.life <= 0) {
+      for (const sys of burst.systems) sys.stop();
+      burst.stopped = true;
+    }
+
+    if (burst.life <= burst.cleanupAt) {
+      for (const sys of burst.systems) sys.dispose();
+      burst.light.dispose();
+      burst.mesh.dispose();
+      grenadeBursts.splice(i, 1);
+    }
+  }
+}
+
+function updateSmokeClouds(dt: number): void {
+  for (let i = smokeClouds.length - 1; i >= 0; i -= 1) {
+    const cloud = smokeClouds[i];
+    cloud.life -= dt;
+    if (!cloud.stopped) {
+      const t = Math.max(0, Math.min(1, cloud.life / 3.2));
+      for (const sys of cloud.systems) {
+        sys.emitRate *= 0.985 + t * 0.01;
+      }
+      if (cloud.life <= 0) {
+        for (const sys of cloud.systems) sys.stop();
+        cloud.stopped = true;
+      }
+    }
+
+    if (cloud.life <= cloud.cleanupAt) {
+      for (const sys of cloud.systems) sys.dispose();
+      smokeClouds.splice(i, 1);
+    }
+  }
+}
+
+function updatePickups(dt: number): void {
+  for (let i = pickups.length - 1; i >= 0; i -= 1) {
+    const p = pickups[i];
+    p.phase += dt * 2.8;
+    p.mesh.position.y = p.baseY + Math.sin(p.phase) * 0.065;
+    p.mesh.rotation.y += dt * 1.2;
+    p.haloA.rotation.y += dt * 1.8;
+    p.haloB.rotation.x += dt * 1.35;
+    const auraPulse = 0.92 + Math.sin(p.phase * 2.3) * 0.12;
+    p.haloA.scaling.setAll(auraPulse);
+    p.haloB.scaling.setAll(1.08 - (auraPulse - 0.92) * 0.7);
+    p.glow.scaling.setAll(0.9 + Math.sin(p.phase * 1.8) * 0.08);
+    p.light.intensity = 1.55 + Math.sin(p.phase * 3.1) * 0.55;
+
+    const pulseRateA = 36 + Math.sin(p.phase * 3.4) * 9;
+    const pulseRateB = 18 + Math.sin(p.phase * 2.2 + 1.2) * 5;
+    if (p.systems[0]) p.systems[0].emitRate = Math.max(12, pulseRateA);
+    if (p.systems[1]) p.systems[1].emitRate = Math.max(8, pulseRateB);
+
+    const dx = p.mesh.position.x - camera.position.x;
+    const dz = p.mesh.position.z - camera.position.z;
+    const dist2D = Math.hypot(dx, dz);
+    if (dist2D > 0.95) continue;
+
+    if (p.kind === "health") {
+      if (health >= maxHealth) continue;
+      health = Math.min(maxHealth, health + p.amount);
+    } else if (p.kind === "ammo") {
+      ammo = Math.min(220, ammo + p.amount);
+    } else {
+      grenades = Math.min(3, grenades + p.amount);
+    }
+
+    playPickupSound();
+    for (const sys of p.systems) sys.dispose();
+    p.light.dispose();
+    p.mesh.dispose();
+    pickups.splice(i, 1);
+    updateHud();
+  }
+}
+
+function updatePlayer(dt: number): void {
+  const turnDir = (input.ArrowRight ? 1 : 0) - (input.ArrowLeft ? 1 : 0);
+  if (turnDir !== 0) yaw += turnDir * dt * 2.2;
+
+  const fwd = new Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+  const right = new Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+
+  const moveAxisZ = (input.KeyW ? 1 : 0) - (input.KeyS ? 1 : 0);
+  const moveAxisX = (input.KeyD ? 1 : 0) - (input.KeyA ? 1 : 0);
+
+  const wanted = fwd.scale(moveAxisZ).add(right.scale(moveAxisX));
+  if (wanted.lengthSquared() > 0.001) {
+    wanted.normalize();
+    const sprintHeld = input.ShiftLeft || input.ShiftRight;
+    const speed = (speedBoost ? 6.8 : sprintHeld ? 5.7 : 4.2) * dt;
+
+    const currentFloor = floorHeightAtWorld(camera.position);
+
+    const tryX = camera.position.add(new Vector3(wanted.x * speed, 0, 0));
+    const mapX = worldToMap(tryX);
+    if (canOccupyMap(mapX.x, mapX.y)) {
+      const floorX = floorHeightAtMap(mapX.x, mapX.y);
+      if (floorX - currentFloor <= 0.65 || !isGrounded) camera.position.x = tryX.x;
+    }
+
+    const tryZ = camera.position.add(new Vector3(0, 0, wanted.z * speed));
+    const mapZ = worldToMap(tryZ);
+    if (canOccupyMap(mapZ.x, mapZ.y)) {
+      const floorZ = floorHeightAtMap(mapZ.x, mapZ.y);
+      if (floorZ - currentFloor <= 0.65 || !isGrounded) camera.position.z = tryZ.z;
+    }
+
+    gunBobTime += dt * 8;
+  }
+
+  if (jumpQueued && isGrounded && !gameOver && !victory) {
+    verticalVelocity = JUMP_VELOCITY;
+    isGrounded = false;
+  }
+  jumpQueued = false;
+
+  verticalVelocity -= GRAVITY * dt;
+  camera.position.y += verticalVelocity * dt;
+
+  const floor = floorHeightAtWorld(camera.position) + EYE_HEIGHT;
+  if (camera.position.y <= floor) {
+    camera.position.y = floor;
+    verticalVelocity = 0;
+    isGrounded = true;
+  } else {
+    isGrounded = false;
+  }
+
+  if (isGrounded && floorHeightAtWorld(camera.position) >= 0) {
+    const map = worldToMap(camera.position);
+    safeSpawn = { x: map.x, y: map.y };
+  }
+
+  if (camera.position.y < PIT_DEPTH + EYE_HEIGHT - 0.2) {
+    damagePlayer(14);
+    resetPlayerAtSpawn(safeSpawn.x, safeSpawn.y);
+  }
+
+  camera.rotation = new Vector3(pitch, yaw, 0);
+
+  if (fireCooldown > 0) fireCooldown -= dt;
+  if (grenadeCooldown > 0) grenadeCooldown -= dt;
+  if (input.MouseLeft && !cheatOpen && fireCooldown <= 0) fireWeapon();
+
+  recoil = Math.max(0, recoil - dt * 0.75);
+  if (gunRoot) {
+    const bob = wanted.lengthSquared() > 0.001 ? Math.sin(gunBobTime) * 0.015 : 0;
+    gunRoot.position.y = -0.97 + bob - recoil * 0.65;
+    if (gunSlide) gunSlide.position.z = 0.7 - recoil * 0.45;
+  }
+}
+
+function updatePortal(dt: number): void {
+  if (!portalMesh) return;
+  if (portalActive) {
+    portalMesh.rotation.y += dt * 1.6;
+    portalMesh.rotation.x = Math.sin(performance.now() * 0.0015) * 0.12;
+
+    const dist = Vector3.Distance(portalMesh.position, camera.position);
+    if (dist < 1.4) {
+      if (currentLevel < LEVELS.length - 1) startLevel(currentLevel + 1, false);
+      else {
+        victory = true;
+        portalActive = false;
+        portalMesh.isVisible = false;
+        setCheatStatus("You won. Cat hell is clear.");
+      }
+    }
+  }
+}
+
+function toggleWeapon(): void {
+  const modes: WeaponMode[] = ["gun"];
+  if (hasCannon) modes.push("cannon");
+  if (hasMinigun) modes.push("minigun");
+  const index = modes.indexOf(weaponMode);
+  weaponMode = modes[(index + 1) % modes.length];
+  updateHud();
+}
+
+function clearEnemiesCheat(): void {
+  for (const enemy of enemies) {
+    if (enemy.health <= 0) continue;
+    enemy.health = 0;
+    enemy.mesh.dispose();
+  }
+  setPortalActive(true);
+}
+
+function runCheat(raw: string): void {
+  const cheat = raw.trim().toLowerCase();
+  if (!cheat) {
+    setCheatStatus("Enter a cheat code");
+    return;
+  }
+
+  if (cheat === "help" || cheat === "/help") {
+    setCheatStatus("meow | furball | catnip | zoomies | hiss | nap# | resetcheats");
+    addCheatHistory("/help", "listed cheats");
+    return;
+  }
+
+  if (cheat === "meow") {
+    hasMinigun = true;
+    weaponMode = "minigun";
+    ammo = Math.min(240, ammo + 100);
+    setCheatStatus("Minigun unlocked");
+    addCheatHistory("meow", "minigun");
+    updateHud();
+    return;
+  }
+
+  if (cheat === "furball") {
+    godMode = !godMode;
+    setCheatStatus(`Infinite health ${godMode ? "ON" : "OFF"}`);
+    addCheatHistory("furball", godMode ? "on" : "off");
+    updateHud();
+    return;
+  }
+
+  if (cheat === "catnip") {
+    health = maxHealth;
+    ammo = 220;
+    grenades = 3;
+    smokeGrenades = 2;
+    setCheatStatus("Health and ammo maxed");
+    addCheatHistory("catnip", "restored");
+    updateHud();
+    return;
+  }
+
+  if (cheat === "zoomies") {
+    speedBoost = !speedBoost;
+    setCheatStatus(`Speed boost ${speedBoost ? "ON" : "OFF"}`);
+    addCheatHistory("zoomies", speedBoost ? "on" : "off");
+    updateHud();
+    return;
+  }
+
+  if (cheat === "hiss") {
+    clearEnemiesCheat();
+    setCheatStatus("Level cleared");
+    addCheatHistory("hiss", "cleared");
+    updateHud();
+    return;
+  }
+
+  if (cheat === "resetcheats") {
+    speedBoost = false;
+    godMode = false;
+    hasMinigun = false;
+    if (weaponMode === "minigun") weaponMode = hasCannon ? "cannon" : "gun";
+    setCheatStatus("Cheats reset");
+    addCheatHistory("resetcheats", "off");
+    updateHud();
+    return;
+  }
+
+  const napLevel = parseNapCheat(cheat, LEVELS.length);
+  if (napLevel !== null) {
+    startLevel(napLevel, false);
+    setCheatStatus(`Jumped to level ${napLevel + 1}`);
+    addCheatHistory(cheat, `level ${napLevel + 1}`);
+    return;
+  }
+
+  setCheatStatus("Unknown cheat");
+  addCheatHistory(cheat, "unknown");
+}
+
+function toggleCheatConsole(): void {
   cheatOpen = !cheatOpen;
   cheatConsoleEl.classList.toggle("hidden", !cheatOpen);
   if (cheatOpen) {
     if (document.pointerLockElement === canvas) document.exitPointerLock();
-    for (const key of Object.keys(input)) input[key] = false;
+    pointerLocked = false;
+    setGrenadeChargeHud(false, 0);
+    Object.keys(input).forEach((k) => {
+      input[k as keyof InputState] = false;
+    });
     cheatInputEl.value = "";
     cheatInputEl.focus();
     setCheatStatus("Type a cheat and press Enter");
@@ -135,1505 +1846,163 @@ function toggleCheatConsole() {
   }
 }
 
-function lineOfSight(ax, ay, bx, by) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const dist = Math.hypot(dx, dy);
-  if (dist < 0.001) return true;
-
-  const step = 0.08;
-  let x = ax;
-  let y = ay;
-  let t = 0;
-  while (t < dist) {
-    x += (dx / dist) * step;
-    y += (dy / dist) * step;
-    if (isWall(x, y)) return false;
-    t += step;
-  }
-  return true;
-}
-
-function livingEnemyCount() {
-  return enemies.filter((e) => e.alive).length;
-}
-
-function livingKittensCount() {
-  return enemies.filter((e) => e.alive && e.type === "kitten").length;
-}
-
-function canOccupy(x, y, radius = PLAYER.radius) {
-  return !(
-    isWall(x - radius, y - radius) ||
-    isWall(x + radius, y - radius) ||
-    isWall(x - radius, y + radius) ||
-    isWall(x + radius, y + radius)
-  );
-}
-
-function tileKeyFromPos(x, y) {
-  return `${Math.floor(x)},${Math.floor(y)}`;
-}
-
-function isPlatformChallengeActive() {
-  return currentLevel === PLATFORM_LEVEL_INDEX;
-}
-
-function isPitAt(x, y) {
-  if (!isPlatformChallengeActive()) return false;
-  return PLATFORM_PITS.has(tileKeyFromPos(x, y));
-}
-
-function getFloorHeightAt(x, y) {
-  if (isWall(x, y)) return 99;
-  if (!isPlatformChallengeActive()) return 0;
-  const key = tileKeyFromPos(x, y);
-  if (PLATFORM_PADS.has(key)) return 1.0;
-  if (PLATFORM_PITS.has(key)) return -1.2;
-  return 0;
-}
-
-function findSafeSpot(x, y) {
-  if (canOccupy(x, y) && getFloorHeightAt(x, y) >= 0) return { x, y };
-  const spots = [ ...PICKUP_POINTS, ...SPAWN_POINTS, { x: 2.2, y: 2.2 } ];
-  for (const s of spots) {
-    if (canOccupy(s.x, s.y) && getFloorHeightAt(s.x, s.y) >= 0) return { x: s.x, y: s.y };
-  }
-  return { x: 2.2, y: 2.2 };
-}
-
-function spawnKittenNearBoss(boss) {
-  const offsets = [
-    { x: 0.6, y: 0 },
-    { x: -0.6, y: 0 },
-    { x: 0, y: 0.6 },
-    { x: 0, y: -0.6 },
-    { x: 0.45, y: 0.45 },
-    { x: -0.45, y: -0.45 },
-  ];
-  for (const off of offsets) {
-    const sx = boss.x + off.x;
-    const sy = boss.y + off.y;
-    if (isWall(sx, sy)) continue;
-    enemies.push({
-      ...ENEMY_TEMPLATE,
-      type: "kitten",
-      x: sx,
-      y: sy,
-      radius: 0.2,
-      speed: 2.45,
-      health: 1,
-      maxHealth: 1,
-      meleeDamage: 7,
-      meleeRange: 1.05,
-      meleeCooldownBase: 0.55,
-      canShoot: false,
-      canSpawnKittens: false,
-      rangedCooldownBase: 999,
-      rangedCooldownJitter: 0,
-      shotDamage: 0,
-      shotSpeed: 0,
-      meleeCooldown: 0.2 + Math.random() * 0.4,
-      alive: true,
-    });
-    return true;
-  }
-  return false;
-}
-
-function spawnScaledEnemies(levelIndex) {
-  enemies.length = 0;
-  enemyShots.length = 0;
-
-  const config = LEVELS[levelIndex];
-  if (config.bossFight) {
-    enemies.push({
-      ...ENEMY_TEMPLATE,
-      type: "boss",
-      x: 11.5,
-      y: 8.0,
-      radius: 0.45,
-      speed: 0.8,
-      health: 34,
-      maxHealth: 34,
-      meleeDamage: 18,
-      meleeRange: 1.35,
-      meleeCooldownBase: 1.1,
-      canShoot: true,
-      rangedCooldownBase: 0.95,
-      rangedCooldownJitter: 0.35,
-      rangedCooldown: 0.5,
-      shotDamage: 20,
-      shotSpeed: 4.4,
-      canSpawnKittens: true,
-      kittenSpawnCooldown: 2.5,
-      kittenSpawnRate: 4.0,
-      maxKittens: 7,
-      alive: true,
-    });
-    return;
-  }
-
-  const validSpawns = SPAWN_POINTS.filter((p) => !isWall(p.x, p.y));
-  const spawnPool = validSpawns.length > 0 ? validSpawns : [{ x: 8.5, y: 8.5 }];
-  const enemyHealth = levelIndex === 3 ? 4 : 2 + levelIndex;
-  const enemySpeed = levelIndex === 3 ? 1.2 : 1.0 + levelIndex * 0.12;
-  const enemyDamage = levelIndex === 3 ? 11 : 8 + levelIndex * 2;
-  const fireCooldownBase = Math.max(0.45, 1.2 - levelIndex * 0.2);
-  const fireJitter = Math.max(0.2, 0.55 - levelIndex * 0.07);
-  const levelBulletSpeed = levelIndex === 3 ? 4.6 : 6;
-
-  for (let i = 0; i < config.enemyCount; i += 1) {
-    const spawn = spawnPool[(i + levelIndex * 3) % spawnPool.length];
-    enemies.push({
-      ...ENEMY_TEMPLATE,
-      x: spawn.x,
-      y: spawn.y,
-      speed: enemySpeed,
-      meleeCooldown: Math.random() * 0.4,
-      rangedCooldown: Math.random() * fireCooldownBase,
-      health: enemyHealth,
-      maxHealth: enemyHealth,
-      rangedCooldownBase: fireCooldownBase,
-      rangedCooldownJitter: fireJitter,
-      shotDamage: enemyDamage,
-      shotSpeed: levelBulletSpeed,
-      alive: true,
-    });
-  }
-}
-
-function spawnLevelPickups(levelIndex) {
-  pickups.length = 0;
-  const validPoints = PICKUP_POINTS.filter((p) => !isWall(p.x, p.y));
-  const pool = validPoints.length > 0 ? validPoints : [{ x: 8.5, y: 8.5 }];
-
-  const healthPackCount = Math.max(2, 3 + Math.floor(levelIndex / 2) + (levelIndex === 3 ? 1 : 0));
-  const ammoPackCount = 4;
-  const ammoAmount = 10;
-  const healthAmount = 26 - Math.min(8, levelIndex * 2) + (levelIndex === 3 ? 4 : 0);
-
-  for (let i = 0; i < healthPackCount; i += 1) {
-    const pos = pool[(i + levelIndex) % pool.length];
-    pickups.push({
-      type: "health",
-      x: pos.x,
-      y: pos.y,
-      radius: 0.24,
-      amount: healthAmount,
-      alive: true,
-    });
-  }
-
-  for (let i = 0; i < ammoPackCount; i += 1) {
-    const pos = pool[(i + levelIndex * 2 + 3) % pool.length];
-    pickups.push({
-      type: "ammo",
-      x: pos.x,
-      y: pos.y,
-      radius: 0.24,
-      amount: ammoAmount,
-      alive: true,
-    });
-  }
-}
-
-function startLevel(levelIndex, freshRun = false) {
-  const config = LEVELS[levelIndex];
-  currentLevel = levelIndex;
-  portalActive = false;
-  portal = { x: config.portal.x, y: config.portal.y, radius: 0.45 };
-
-  const safe = findSafeSpot(config.playerSpawn.x, config.playerSpawn.y);
-  PLAYER.x = safe.x;
-  PLAYER.y = safe.y;
-  PLAYER.z = getFloorHeightAt(safe.x, safe.y);
-  PLAYER.vz = 0;
-  PLAYER.onGround = true;
-  PLAYER.angle = 0;
-  PLAYER.safeX = safe.x;
-  PLAYER.safeY = safe.y;
-
-  if (!freshRun) {
-    PLAYER.ammo = Math.min(120, PLAYER.ammo + 14);
-    PLAYER.health = Math.min(PLAYER.maxHealth, PLAYER.health + 18);
-  }
-
-  spawnScaledEnemies(levelIndex);
-  spawnLevelPickups(levelIndex);
-  updateHud();
-}
-
-function resetGame() {
-  PLAYER.z = getFloorHeightAt(PLAYER.x, PLAYER.y);
-  PLAYER.vz = 0;
-  PLAYER.onGround = true;
-  PLAYER.health = PLAYER.maxHealth;
-  PLAYER.ammo = 40;
-  PLAYER.hasCannon = false;
-  PLAYER.weaponMode = "gun";
-  fireCooldown = 0;
-  muzzleFlash = 0;
-  gameOver = false;
-  victory = false;
-  startLevel(0, true);
-}
-
-function updateHud() {
-  const hp = Math.max(0, Math.floor(PLAYER.health));
-  const hpPercent = Math.max(0, Math.min(100, (PLAYER.health / PLAYER.maxHealth) * 100));
-
-  healthTextEl.textContent = `Health: ${hp}`;
-  healthBarEl.style.width = `${hpPercent}%`;
-  levelEl.textContent = `Level: ${currentLevel + 1}/${LEVELS.length}`;
-  ammoEl.textContent = `Ammo: ${PLAYER.ammo}`;
-  weaponEl.textContent = PLAYER.hasCannon
-    ? `Weapon: ${
-      PLAYER.weaponMode === "cannon"
-        ? "Cannon"
-        : PLAYER.weaponMode === "minigun"
-          ? "Minigun"
-          : "Gun"
-    } (E)`
-    : PLAYER.hasMinigun
-      ? `Weapon: ${PLAYER.weaponMode === "minigun" ? "Minigun" : "Gun"} (E)`
-      : "Weapon: Gun";
-
-  const alive = livingEnemyCount();
-  enemyEl.textContent = portalActive ? "Portal: Enter!" : `Cat Fiends: ${alive}/${enemies.length}`;
-
-  const boss = enemies.find((e) => e.alive && e.type === "boss");
-  if (boss) {
-    const percent = Math.max(0, Math.min(100, (boss.health / boss.maxHealth) * 100));
-    bossHudEl.classList.remove("hidden");
-    bossTextEl.textContent = `Boss HP: ${Math.max(0, Math.ceil(boss.health))}/${boss.maxHealth}`;
-    bossBarEl.style.width = `${percent}%`;
-  } else {
-    bossHudEl.classList.add("hidden");
-  }
-
-  const badges = [];
-  if (godMode) badges.push("GOD");
-  if (speedBoost) badges.push("ZOOMIES");
-  if (PLAYER.hasMinigun) badges.push("MINIGUN");
-  cheatBadgesEl.classList.toggle("hidden", badges.length === 0);
-  cheatBadgesEl.innerHTML = badges.map((b) => `<span class="cheat-badge">${b}</span>`).join("");
-}
-
-function tryMove(nx, ny) {
-  const dx = nx - PLAYER.x;
-  const dy = ny - PLAYER.y;
-  const distance = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(distance / 0.08));
-
-  for (let i = 1; i <= steps; i += 1) {
-    const t = i / steps;
-    const px = PLAYER.x + dx * t;
-    const py = PLAYER.y + dy * t;
-    const currentFloor = getFloorHeightAt(PLAYER.x, PLAYER.y);
-
-    if (canOccupy(px, PLAYER.y)) {
-      const floorX = getFloorHeightAt(px, PLAYER.y);
-      const canStepX = PLAYER.onGround
-        ? floorX - currentFloor <= 0.35
-        : floorX <= PLAYER.z + 0.1;
-      if (canStepX) PLAYER.x = px;
-    }
-
-    if (canOccupy(PLAYER.x, py)) {
-      const floorY = getFloorHeightAt(PLAYER.x, py);
-      const canStepY = PLAYER.onGround
-        ? floorY - getFloorHeightAt(PLAYER.x, PLAYER.y) <= 0.35
-        : floorY <= PLAYER.z + 0.1;
-      if (canStepY) PLAYER.y = py;
-    }
-  }
-}
-
-function castRay(rayAngle) {
-  const step = 0.03;
-  let depth = 0;
-  let x = PLAYER.x;
-  let y = PLAYER.y;
-
-  while (depth < MAX_DEPTH) {
-    x += Math.cos(rayAngle) * step;
-    y += Math.sin(rayAngle) * step;
-    depth += step;
-    if (isWall(x, y)) break;
-  }
-
-  const corrected = depth * Math.cos(rayAngle - PLAYER.angle);
-  return Math.max(0.0001, corrected);
-}
-
-function renderEnemySprite(enemy, wallDepths, tint, cameraShift) {
-  const dx = enemy.x - PLAYER.x;
-  const dy = enemy.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angleToEnemy = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angleToEnemy - PLAYER.angle);
-
-  if (Math.abs(relative) > HALF_FOV + 0.25) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const typeScale = enemy.type === "boss" ? 1.45 : enemy.type === "kitten" ? 0.58 : 1;
-  const spriteSize = Math.min(canvas.height, ((canvas.height * 0.75) / dist) * typeScale);
-  const left = screenX - spriteSize / 2;
-  const top = canvas.height / 2 - spriteSize / 2 + cameraShift;
-
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  ctx.save();
-  ctx.translate(left, top);
-
-  ctx.fillStyle = tint;
-  ctx.fillRect(spriteSize * 0.18, spriteSize * 0.2, spriteSize * 0.64, spriteSize * 0.62);
-
-  // Belly patch
-  ctx.fillStyle = "#ffe7d6";
-  ctx.fillRect(spriteSize * 0.34, spriteSize * 0.44, spriteSize * 0.32, spriteSize * 0.28);
-
-  ctx.fillStyle = tint;
-  ctx.beginPath();
-  ctx.moveTo(spriteSize * 0.18, spriteSize * 0.2);
-  ctx.lineTo(spriteSize * 0.32, 0);
-  ctx.lineTo(spriteSize * 0.45, spriteSize * 0.2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(spriteSize * 0.82, spriteSize * 0.2);
-  ctx.lineTo(spriteSize * 0.68, 0);
-  ctx.lineTo(spriteSize * 0.55, spriteSize * 0.2);
-  ctx.fill();
-
-  ctx.fillStyle = "#1a1313";
-  ctx.fillRect(spriteSize * 0.33, spriteSize * 0.45, spriteSize * 0.08, spriteSize * 0.08);
-  ctx.fillRect(spriteSize * 0.59, spriteSize * 0.45, spriteSize * 0.08, spriteSize * 0.08);
-  ctx.fillRect(spriteSize * 0.45, spriteSize * 0.58, spriteSize * 0.1, spriteSize * 0.08);
-
-  // Whiskers
-  ctx.strokeStyle = "#1a1313";
-  ctx.lineWidth = Math.max(1, spriteSize * 0.015);
-  ctx.beginPath();
-  ctx.moveTo(spriteSize * 0.44, spriteSize * 0.61);
-  ctx.lineTo(spriteSize * 0.30, spriteSize * 0.58);
-  ctx.moveTo(spriteSize * 0.44, spriteSize * 0.63);
-  ctx.lineTo(spriteSize * 0.29, spriteSize * 0.65);
-  ctx.moveTo(spriteSize * 0.56, spriteSize * 0.61);
-  ctx.lineTo(spriteSize * 0.70, spriteSize * 0.58);
-  ctx.moveTo(spriteSize * 0.56, spriteSize * 0.63);
-  ctx.lineTo(spriteSize * 0.71, spriteSize * 0.65);
-  ctx.stroke();
-
-  // Tail
-  ctx.strokeStyle = tint;
-  ctx.lineWidth = Math.max(2, spriteSize * 0.06);
-  ctx.beginPath();
-  ctx.moveTo(spriteSize * 0.8, spriteSize * 0.72);
-  ctx.quadraticCurveTo(spriteSize * 0.95, spriteSize * 0.64, spriteSize * 0.88, spriteSize * 0.5);
-  ctx.stroke();
-
-  if (enemy.type !== "kitten") {
-    // Cat blaster
-    ctx.fillStyle = "#3c3e45";
-    ctx.fillRect(spriteSize * 0.36, spriteSize * 0.70, spriteSize * 0.28, spriteSize * 0.08);
-    ctx.fillStyle = "#5f6672";
-    ctx.fillRect(spriteSize * 0.64, spriteSize * 0.72, spriteSize * 0.14, spriteSize * 0.04);
-  }
-
-  if (enemy.type === "boss") {
-    // Can cannon
-    ctx.fillStyle = "#cfd4dc";
-    ctx.fillRect(spriteSize * 0.62, spriteSize * 0.61, spriteSize * 0.2, spriteSize * 0.16);
-    ctx.fillStyle = "#9da5b2";
-    ctx.fillRect(spriteSize * 0.62, spriteSize * 0.60, spriteSize * 0.2, spriteSize * 0.03);
-    ctx.fillRect(spriteSize * 0.62, spriteSize * 0.74, spriteSize * 0.2, spriteSize * 0.03);
-    ctx.fillStyle = "#e96161";
-    ctx.fillRect(spriteSize * 0.66, spriteSize * 0.66, spriteSize * 0.12, spriteSize * 0.05);
-  }
-
-  if (enemy.canShoot && enemy.rangedCooldown < 0.2) {
-    ctx.fillStyle = "#ffcc66";
-    ctx.fillRect(spriteSize * 0.44, spriteSize * 0.68, spriteSize * 0.12, spriteSize * 0.08);
-  }
-
-  ctx.restore();
-}
-
-function renderShot(shot, wallDepths, cameraShift) {
-  const dx = shot.x - PLAYER.x;
-  const dy = shot.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angleToShot = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angleToShot - PLAYER.angle);
-
-  if (Math.abs(relative) > HALF_FOV + 0.1) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const size = Math.min(50, (canvas.height * 0.18) / dist);
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  ctx.fillStyle = "#ff7452";
-  ctx.beginPath();
-  ctx.arc(screenX, canvas.height / 2 + cameraShift, Math.max(2, size * 0.2), 0, Math.PI * 2);
-  ctx.fill();
-}
-
-function renderCannonBurst(burst, wallDepths, cameraShift) {
-  const dx = burst.x - PLAYER.x;
-  const dy = burst.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angleToBurst = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angleToBurst - PLAYER.angle);
-
-  if (Math.abs(relative) > HALF_FOV + 0.15) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const size = Math.min(canvas.height * 0.7, (canvas.height * 0.5) / Math.max(0.2, dist)) * (0.55 + burst.power * 0.25);
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  const alpha = Math.max(0, burst.life / burst.maxLife);
-  const cy = canvas.height / 2 + size * 0.05 + cameraShift;
-  const r = size * (0.22 + (1 - alpha) * 0.45);
-
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-  ctx.strokeStyle = `rgba(120, 230, 255, ${0.25 + alpha * 0.65})`;
-  ctx.lineWidth = Math.max(2, size * 0.08);
-  ctx.beginPath();
-  ctx.arc(screenX, cy, r, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.strokeStyle = `rgba(255, 245, 180, ${0.18 + alpha * 0.5})`;
-  ctx.lineWidth = Math.max(1.5, size * 0.04);
-  ctx.beginPath();
-  ctx.arc(screenX, cy, r * 0.58, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function renderPickup(pickup, wallDepths, cameraShift) {
-  if (!pickup.alive) return;
-
-  const dx = pickup.x - PLAYER.x;
-  const dy = pickup.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angle = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angle - PLAYER.angle);
-
-  if (Math.abs(relative) > HALF_FOV + 0.1) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const size = Math.min(canvas.height * 0.55, (canvas.height * 0.45) / Math.max(0.2, dist));
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  const cy = canvas.height / 2 + size * 0.75 + cameraShift;
-  const pulse = (Math.sin(performance.now() * 0.01 + pickup.x * 2 + pickup.y) + 1) * 0.5;
-
-  ctx.save();
-  ctx.translate(screenX, cy);
-
-  if (pickup.type === "health") {
-    ctx.fillStyle = "#d33434";
-    ctx.fillRect(-size * 0.2, -size * 0.4, size * 0.4, size * 0.4);
-    ctx.fillStyle = "#fff3f3";
-    ctx.fillRect(-size * 0.05, -size * 0.34, size * 0.1, size * 0.28);
-    ctx.fillRect(-size * 0.14, -size * 0.25, size * 0.28, size * 0.1);
-  } else if (pickup.type === "ammo") {
-    ctx.fillStyle = "#40607a";
-    ctx.fillRect(-size * 0.2, -size * 0.38, size * 0.4, size * 0.36);
-    ctx.fillStyle = "#8eaec7";
-    ctx.fillRect(-size * 0.16, -size * 0.35, size * 0.32, size * 0.06);
-    ctx.fillStyle = "#f4c85d";
-    for (let i = 0; i < 3; i += 1) {
-      ctx.fillRect(-size * 0.14 + i * size * 0.1, -size * 0.26, size * 0.06, size * 0.18);
-    }
-  } else {
-    // Boss weapon crate
-    ctx.fillStyle = "#6f7d8f";
-    ctx.fillRect(-size * 0.22, -size * 0.4, size * 0.44, size * 0.38);
-    ctx.fillStyle = "#d7dee8";
-    ctx.fillRect(-size * 0.18, -size * 0.34, size * 0.36, size * 0.08);
-    ctx.fillStyle = "#d25555";
-    ctx.fillRect(-size * 0.08, -size * 0.28, size * 0.16, size * 0.18);
-    ctx.fillStyle = "#e5eef9";
-    ctx.fillRect(-size * 0.02, -size * 0.26, size * 0.04, size * 0.14);
-  }
-
-  ctx.globalCompositeOperation = "lighter";
-  ctx.fillStyle = pickup.type === "health"
-    ? `rgba(255, 90, 90, ${0.22 + pulse * 0.15})`
-    : pickup.type === "ammo"
-      ? `rgba(130, 200, 255, ${0.2 + pulse * 0.15})`
-      : `rgba(255, 230, 140, ${0.22 + pulse * 0.15})`;
-  ctx.beginPath();
-  ctx.arc(0, -size * 0.2, size * 0.4, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-
-function renderPortal(wallDepths, cameraShift) {
-  if (!portalActive) return;
-
-  const dx = portal.x - PLAYER.x;
-  const dy = portal.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angleToPortal = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angleToPortal - PLAYER.angle);
-
-  if (Math.abs(relative) > HALF_FOV + 0.2) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const size = Math.min(canvas.height * 0.8, (canvas.height * 0.9) / Math.max(0.2, dist));
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  const pulse = (Math.sin(performance.now() * 0.008) + 1) * 0.5;
-  const r = Math.max(12, size * 0.45);
-  const cy = canvas.height / 2 + size * 0.1 + cameraShift;
-
-  ctx.save();
-  ctx.globalCompositeOperation = "lighter";
-  const grad = ctx.createRadialGradient(screenX, cy, r * 0.15, screenX, cy, r);
-  grad.addColorStop(0, `rgba(150, 240, 255, ${0.7 + pulse * 0.2})`);
-  grad.addColorStop(0.55, `rgba(70, 120, 255, ${0.5 + pulse * 0.3})`);
-  grad.addColorStop(1, "rgba(60, 20, 120, 0.05)");
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.ellipse(screenX, cy, r * 0.75, r, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-function renderPlatformBlock(marker, wallDepths, cameraShift) {
-  const dx = marker.x - PLAYER.x;
-  const dy = marker.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angle = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angle - PLAYER.angle);
-  if (Math.abs(relative) > HALF_FOV + 0.2) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const size = Math.min(canvas.height * 0.62, (canvas.height * 0.78) / Math.max(0.2, dist));
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  const cy = canvas.height / 2 + size * 1.04 + cameraShift;
-  const halfW = size * 0.55;
-  const topH = size * 0.42;
-
-  ctx.save();
-  // Front face of raised block
-  ctx.fillStyle = "#1f5579";
-  ctx.fillRect(screenX - halfW * 0.78, cy - topH * 0.08, halfW * 1.56, topH * 0.95);
-
-  // Top face
-  ctx.fillStyle = "#4eb8ef";
-  ctx.beginPath();
-  ctx.moveTo(screenX - halfW * 0.7, cy - topH * 0.08);
-  ctx.lineTo(screenX + halfW * 0.7, cy - topH * 0.08);
-  ctx.lineTo(screenX + halfW * 0.92, cy - topH * 0.42);
-  ctx.lineTo(screenX - halfW * 0.92, cy - topH * 0.42);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = "#98dcff";
-  ctx.lineWidth = Math.max(1, size * 0.03);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-function renderPitHole(marker, wallDepths, cameraShift) {
-  const dx = marker.x - PLAYER.x;
-  const dy = marker.y - PLAYER.y;
-  const dist = Math.hypot(dx, dy);
-  const angle = Math.atan2(dy, dx);
-  const relative = normalizeAngle(angle - PLAYER.angle);
-  if (Math.abs(relative) > HALF_FOV + 0.2) return;
-
-  const screenX = ((relative + HALF_FOV) / FOV) * canvas.width;
-  const size = Math.min(canvas.height * 0.55, (canvas.height * 0.7) / Math.max(0.2, dist));
-  const rayIdx = Math.max(0, Math.min(RAY_COUNT - 1, Math.floor((screenX / canvas.width) * RAY_COUNT)));
-  if (dist > wallDepths[rayIdx]) return;
-
-  const cy = canvas.height / 2 + size * 1.06 + cameraShift;
-  ctx.save();
-  ctx.fillStyle = "#09090ce0";
-  ctx.beginPath();
-  ctx.moveTo(screenX - size * 0.56, cy);
-  ctx.lineTo(screenX + size * 0.56, cy);
-  ctx.lineTo(screenX + size * 0.42, cy + size * 0.2);
-  ctx.lineTo(screenX - size * 0.42, cy + size * 0.2);
-  ctx.closePath();
-  ctx.fill();
-  ctx.strokeStyle = "#3f2029";
-  ctx.lineWidth = Math.max(1, size * 0.03);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function render3D() {
-  const w = canvas.width;
-  const h = canvas.height;
-  const cameraShift = -PLAYER.z * 120;
-
-  ctx.fillStyle = "#7f6d56";
-  ctx.fillRect(0, 0, w, h / 2 + cameraShift);
-  ctx.fillStyle = "#352821";
-  ctx.fillRect(0, h / 2 + cameraShift, w, h / 2 - cameraShift);
-
-  const wallDepths = new Float32Array(RAY_COUNT);
-  const colW = w / RAY_COUNT;
-
-  for (let i = 0; i < RAY_COUNT; i += 1) {
-    const rayRatio = i / RAY_COUNT;
-    const rayAngle = PLAYER.angle - HALF_FOV + rayRatio * FOV;
-    const dist = castRay(rayAngle);
-    wallDepths[i] = dist;
-
-    const wallH = Math.min(h, (h * 0.9) / dist);
-    const y = (h - wallH) / 2 + cameraShift;
-
-    const shade = Math.max(20, Math.floor(210 - dist * 24));
-    ctx.fillStyle = `rgb(${shade}, ${Math.floor(shade * 0.8)}, ${Math.floor(shade * 0.65)})`;
-    ctx.fillRect(i * colW, y, colW + 1, wallH);
-  }
-
-  const sprites = [];
-  for (const enemy of enemies) {
-    if (enemy.alive) sprites.push({ type: "enemy", entity: enemy, dist: Math.hypot(enemy.x - PLAYER.x, enemy.y - PLAYER.y) });
-  }
-  for (const shot of enemyShots) {
-    sprites.push({ type: "shot", entity: shot, dist: Math.hypot(shot.x - PLAYER.x, shot.y - PLAYER.y) });
-  }
-  for (const burst of cannonBursts) {
-    sprites.push({ type: "cannonBurst", entity: burst, dist: Math.hypot(burst.x - PLAYER.x, burst.y - PLAYER.y) });
-  }
-  for (const pickup of pickups) {
-    if (pickup.alive) sprites.push({ type: "pickup", entity: pickup, dist: Math.hypot(pickup.x - PLAYER.x, pickup.y - PLAYER.y) });
-  }
-  if (isPlatformChallengeActive()) {
-    for (const pit of PLATFORM_PIT_LIST) {
-      sprites.push({ type: "platformPit", entity: pit, dist: Math.hypot(pit.x - PLAYER.x, pit.y - PLAYER.y) });
-    }
-    for (const pad of PLATFORM_PAD_LIST) {
-      sprites.push({ type: "platformPad", entity: pad, dist: Math.hypot(pad.x - PLAYER.x, pad.y - PLAYER.y) });
-    }
-  }
-  if (portalActive) {
-    sprites.push({ type: "portal", dist: Math.hypot(portal.x - PLAYER.x, portal.y - PLAYER.y) });
-  }
-
-  sprites.sort((a, b) => b.dist - a.dist);
-  for (const sprite of sprites) {
-    if (sprite.type === "enemy") {
-      let tint = sprite.entity.health === 1 ? "#dc93a8" : "#f2a8b8";
-      if (sprite.entity.type === "boss") tint = "#c78666";
-      if (sprite.entity.type === "kitten") tint = "#f8c3d0";
-      renderEnemySprite(sprite.entity, wallDepths, tint, cameraShift);
-    } else if (sprite.type === "pickup") {
-      renderPickup(sprite.entity, wallDepths, cameraShift);
-    } else if (sprite.type === "portal") {
-      renderPortal(wallDepths, cameraShift);
-    } else if (sprite.type === "cannonBurst") {
-      renderCannonBurst(sprite.entity, wallDepths, cameraShift);
-    } else if (sprite.type === "platformPad") {
-      renderPlatformBlock(sprite.entity, wallDepths, cameraShift);
-    } else if (sprite.type === "platformPit") {
-      renderPitHole(sprite.entity, wallDepths, cameraShift);
-    } else {
-      renderShot(sprite.entity, wallDepths, cameraShift);
-    }
-  }
-
-  renderWeapon();
-  renderCrosshair();
-  renderMiniMap();
-}
-
-function renderWeapon() {
-  const w = canvas.width;
-  const h = canvas.height;
-  const bob = Math.sin(performance.now() * 0.007) * 3;
-  const centerX = w * 0.5;
-  const baseY = h * 0.96 + bob + recoilKick;
-  const backW = w * 0.24;
-  const frontW = w * 0.11;
-  const bodyH = h * 0.17;
-  const depth = h * 0.09;
-
-  const rearLeft = centerX - backW / 2;
-  const rearRight = centerX + backW / 2;
-  const frontLeft = centerX - frontW / 2;
-  const frontRight = centerX + frontW / 2;
-  const topY = baseY - bodyH;
-  const muzzleY = topY - depth;
-  const sideDrop = h * 0.04;
-
-  // Underlay shell prevents tiny transparent seams between faces.
-  ctx.fillStyle = "#13161b";
-  ctx.beginPath();
-  ctx.moveTo(rearLeft - w * 0.005, baseY + h * 0.003);
-  ctx.lineTo(rearRight + w * 0.005, baseY + h * 0.003);
-  ctx.lineTo(frontRight + w * 0.003, baseY - sideDrop + h * 0.004);
-  ctx.lineTo(frontRight + w * 0.002, muzzleY + h * 0.03);
-  ctx.lineTo(frontLeft - w * 0.002, muzzleY + h * 0.03);
-  ctx.lineTo(frontLeft - w * 0.003, baseY - sideDrop + h * 0.004);
-  ctx.closePath();
-  ctx.fill();
-
-  // Side body faces
-  ctx.fillStyle = "#1c2026";
-  ctx.beginPath();
-  ctx.moveTo(rearLeft, baseY);
-  ctx.lineTo(frontLeft, baseY - sideDrop);
-  ctx.lineTo(frontLeft, topY - sideDrop);
-  ctx.lineTo(rearLeft, topY);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.fillStyle = "#2c313a";
-  ctx.beginPath();
-  ctx.moveTo(rearRight, baseY);
-  ctx.lineTo(frontRight, baseY - sideDrop);
-  ctx.lineTo(frontRight, topY - sideDrop);
-  ctx.lineTo(rearRight, topY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Bottom bridge face
-  ctx.fillStyle = "#262b33";
-  ctx.beginPath();
-  ctx.moveTo(rearLeft, baseY);
-  ctx.lineTo(rearRight, baseY);
-  ctx.lineTo(frontRight, baseY - sideDrop);
-  ctx.lineTo(frontLeft, baseY - sideDrop);
-  ctx.closePath();
-  ctx.fill();
-
-  // Top face
-  ctx.fillStyle = "#3d4652";
-  ctx.beginPath();
-  ctx.moveTo(rearLeft, topY);
-  ctx.lineTo(rearRight, topY);
-  ctx.lineTo(frontRight, muzzleY);
-  ctx.lineTo(frontLeft, muzzleY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Front ramp faces seal side openings near the muzzle.
-  ctx.fillStyle = "#303742";
-  ctx.beginPath();
-  ctx.moveTo(frontLeft, topY - sideDrop);
-  ctx.lineTo(frontLeft, baseY - sideDrop);
-  ctx.lineTo(frontLeft + w * 0.012, muzzleY + h * 0.015);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.moveTo(frontRight, topY - sideDrop);
-  ctx.lineTo(frontRight, baseY - sideDrop);
-  ctx.lineTo(frontRight - w * 0.012, muzzleY + h * 0.015);
-  ctx.closePath();
-  ctx.fill();
-
-  // Front cap
-  ctx.fillStyle = "#1f242c";
-  ctx.beginPath();
-  ctx.moveTo(frontLeft + w * 0.012, muzzleY + h * 0.015);
-  ctx.lineTo(frontRight - w * 0.012, muzzleY + h * 0.015);
-  ctx.lineTo(frontRight - w * 0.008, muzzleY + h * 0.03);
-  ctx.lineTo(frontLeft + w * 0.008, muzzleY + h * 0.03);
-  ctx.closePath();
-  ctx.fill();
-
-  // Barrel opening
-  ctx.fillStyle = "#14161a";
-  ctx.beginPath();
-  ctx.moveTo(frontLeft + w * 0.01, muzzleY + h * 0.01);
-  ctx.lineTo(frontRight - w * 0.01, muzzleY + h * 0.01);
-  ctx.lineTo(frontRight - w * 0.016, muzzleY + h * 0.03);
-  ctx.lineTo(frontLeft + w * 0.016, muzzleY + h * 0.03);
-  ctx.closePath();
-  ctx.fill();
-
-  // Highlight strip
-  ctx.fillStyle = PLAYER.weaponMode === "cannon" ? "#8ac6d8" : "#7f8a98";
-  ctx.beginPath();
-  ctx.moveTo(centerX - w * 0.01, topY + h * 0.005);
-  ctx.lineTo(centerX + w * 0.01, topY + h * 0.005);
-  ctx.lineTo(centerX + w * 0.005, muzzleY + h * 0.01);
-  ctx.lineTo(centerX - w * 0.005, muzzleY + h * 0.01);
-  ctx.closePath();
-  ctx.fill();
-
-  // Grip and trigger box
-  ctx.fillStyle = "#171a1f";
-  ctx.fillRect(centerX - w * 0.075, baseY - h * 0.01, w * 0.05, h * 0.17);
-  ctx.fillStyle = "#2b3038";
-  ctx.fillRect(centerX - w * 0.018, baseY - h * 0.006, w * 0.036, h * 0.045);
-
-  if (PLAYER.weaponMode === "cannon" && PLAYER.hasCannon) {
-    ctx.fillStyle = "#77c9df";
-    ctx.fillRect(centerX - w * 0.022, topY + h * 0.02, w * 0.044, h * 0.018);
-  }
-
-  if (muzzleFlash > 0) {
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.fillStyle = PLAYER.weaponMode === "cannon" ? "#8be9ff" : "#ffcf66";
-    ctx.beginPath();
-    ctx.moveTo(centerX - w * 0.016, muzzleY + h * 0.006);
-    ctx.lineTo(centerX, muzzleY - h * 0.055);
-    ctx.lineTo(centerX + w * 0.016, muzzleY + h * 0.006);
-    ctx.lineTo(centerX, muzzleY + h * 0.03);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-  }
-}
-
-function renderCrosshair() {
-  const cx = canvas.width / 2;
-  const cy = canvas.height / 2;
-  ctx.strokeStyle = "#fff";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(cx - 8, cy);
-  ctx.lineTo(cx + 8, cy);
-  ctx.moveTo(cx, cy - 8);
-  ctx.lineTo(cx, cy + 8);
-  ctx.stroke();
-}
-
-function renderMiniMap() {
-  const pad = 14;
-  const size = MINIMAP_SIZES[minimapSizeIndex];
-  const x0 = canvas.width - size - pad;
-  const y0 = pad;
-  const cellW = size / MAP_W;
-  const cellH = size / MAP_H;
-
-  ctx.save();
-  ctx.fillStyle = "#0d121ad6";
-  ctx.fillRect(x0 - 6, y0 - 6, size + 12, size + 12);
-  ctx.strokeStyle = "#6d7c9a";
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(x0 - 6, y0 - 6, size + 12, size + 12);
-
-  for (let y = 0; y < MAP_H; y += 1) {
-    for (let x = 0; x < MAP_W; x += 1) {
-      const key = `${x},${y}`;
-      if (isPlatformChallengeActive() && PLATFORM_PITS.has(key)) {
-        ctx.fillStyle = "#251015";
-      } else if (isPlatformChallengeActive() && PLATFORM_PADS.has(key)) {
-        ctx.fillStyle = "#17324a";
-      } else {
-        ctx.fillStyle = MAP[y][x] === "#" ? "#2a3344" : "#111821";
-      }
-      ctx.fillRect(x0 + x * cellW, y0 + y * cellH, cellW, cellH);
-    }
-  }
-
-  if (portalActive) {
-    const px = x0 + portal.x * cellW;
-    const py = y0 + portal.y * cellH;
-    ctx.fillStyle = "#7feaff";
-    ctx.beginPath();
-    ctx.arc(px, py, Math.max(2, cellW * 0.35), 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  for (const enemy of enemies) {
-    if (!enemy.alive) continue;
-    const ex = x0 + enemy.x * cellW;
-    const ey = y0 + enemy.y * cellH;
-    ctx.fillStyle = enemy.type === "boss" ? "#ff8d66" : enemy.type === "kitten" ? "#ff8fc4" : "#ff5b5b";
-    ctx.fillRect(ex - 2, ey - 2, 4, 4);
-  }
-
-  const ppx = x0 + PLAYER.x * cellW;
-  const ppy = y0 + PLAYER.y * cellH;
-  ctx.fillStyle = "#8dff8a";
-  ctx.beginPath();
-  ctx.arc(ppx, ppy, Math.max(2.5, cellW * 0.35), 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = "#8dff8a";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(ppx, ppy);
-  ctx.lineTo(ppx + Math.cos(PLAYER.angle) * 10, ppy + Math.sin(PLAYER.angle) * 10);
-  ctx.stroke();
-
-  ctx.fillStyle = "#d7e4ff";
-  ctx.font = "11px Trebuchet MS";
-  ctx.fillText(`MINIMAP ${size}`, x0 + 3, y0 - 10);
-  ctx.restore();
-}
-
-function damagePlayer(amount) {
-  if (godMode) return;
-  PLAYER.health -= amount;
-  if (PLAYER.health <= 0) {
-    PLAYER.health = 0;
-    gameOver = true;
-    playPlayerDeathSound();
-  }
-  updateHud();
-}
-
-function enemyShoot(enemy) {
-  const dx = PLAYER.x - enemy.x;
-  const dy = PLAYER.y - enemy.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist < 0.001) return;
-
-  enemyShots.push({
-    x: enemy.x,
-    y: enemy.y,
-    dx: dx / dist,
-    dy: dy / dist,
-    speed: enemy.shotSpeed || 6,
-    life: 2,
-    damage: enemy.shotDamage,
-    radius: 0.12,
-  });
-  playCatMeowSound();
-}
-
-function updateEnemyShots(dt) {
-  for (let i = enemyShots.length - 1; i >= 0; i -= 1) {
-    const shot = enemyShots[i];
-    shot.x += shot.dx * shot.speed * dt;
-    shot.y += shot.dy * shot.speed * dt;
-    shot.life -= dt;
-
-    if (shot.life <= 0 || isWall(shot.x, shot.y)) {
-      enemyShots.splice(i, 1);
-      continue;
-    }
-
-    const distToPlayer = Math.hypot(shot.x - PLAYER.x, shot.y - PLAYER.y);
-    if (distToPlayer < PLAYER.radius + shot.radius) {
-      damagePlayer(shot.damage);
-      enemyShots.splice(i, 1);
-    }
-  }
-}
-
-function updatePickups() {
-  if (gameOver || victory) return;
-
-  for (const pickup of pickups) {
-    if (!pickup.alive) continue;
-    const dist = Math.hypot(pickup.x - PLAYER.x, pickup.y - PLAYER.y);
-    if (dist > PLAYER.radius + pickup.radius) continue;
-
-    if (pickup.type === "health") {
-      if (PLAYER.health >= PLAYER.maxHealth) continue;
-      PLAYER.health = Math.min(PLAYER.maxHealth, PLAYER.health + pickup.amount);
-    } else if (pickup.type === "ammo") {
-      PLAYER.ammo = Math.min(180, PLAYER.ammo + pickup.amount);
-    } else {
-      PLAYER.hasCannon = true;
-      if (PLAYER.weaponMode !== "cannon") PLAYER.weaponMode = "cannon";
-    }
-
-    pickup.alive = false;
-    playPickupSound();
-    updateHud();
-  }
-}
-
-function updatePlatformChallenge() {
-  if (!isPlatformChallengeActive() || gameOver || victory) return;
-  if (PLAYER.z < -1.05) {
-    damagePlayer(14);
-    PLAYER.x = PLAYER.safeX;
-    PLAYER.y = PLAYER.safeY;
-    PLAYER.z = getFloorHeightAt(PLAYER.safeX, PLAYER.safeY);
-    PLAYER.vz = 0;
-    PLAYER.onGround = true;
-    return;
-  }
-
-  if (PLAYER.onGround && getFloorHeightAt(PLAYER.x, PLAYER.y) >= 0) {
-    PLAYER.safeX = PLAYER.x;
-    PLAYER.safeY = PLAYER.y;
-  }
-}
-
-function updateEnemies(dt) {
-  if (gameOver || victory) return;
-
-  for (const enemy of enemies) {
-    if (!enemy.alive) continue;
-
-    const dx = PLAYER.x - enemy.x;
-    const dy = PLAYER.y - enemy.y;
-    const dist = Math.hypot(dx, dy);
-    const canSee = lineOfSight(enemy.x, enemy.y, PLAYER.x, PLAYER.y);
-
-    if (canSee && dist > enemy.meleeRange) {
-      const nx = enemy.x + (dx / dist) * enemy.speed * dt;
-      const ny = enemy.y + (dy / dist) * enemy.speed * dt;
-      if (!isWall(nx, enemy.y)) enemy.x = nx;
-      if (!isWall(enemy.x, ny)) enemy.y = ny;
-    }
-
-    enemy.meleeCooldown -= dt;
-    if (dist < enemy.meleeRange && enemy.meleeCooldown <= 0) {
-      damagePlayer(enemy.meleeDamage);
-      enemy.meleeCooldown = enemy.meleeCooldownBase;
-      if (enemy.type === "kitten") playCatMeowSound();
-    }
-
-    enemy.rangedCooldown -= dt;
-    if (enemy.canShoot && canSee && dist > 1.6 && dist < 9 && enemy.rangedCooldown <= 0) {
-      enemyShoot(enemy);
-      enemy.rangedCooldown = enemy.rangedCooldownBase + Math.random() * enemy.rangedCooldownJitter;
-    }
-
-    if (enemy.canSpawnKittens) {
-      enemy.kittenSpawnCooldown -= dt;
-      if (enemy.kittenSpawnCooldown <= 0 && livingKittensCount() < enemy.maxKittens) {
-        if (spawnKittenNearBoss(enemy)) {
-          enemy.kittenSpawnCooldown = enemy.kittenSpawnRate;
-          playCatMeowSound();
-        } else {
-          enemy.kittenSpawnCooldown = 1.2;
-        }
-      }
-    }
-  }
-
-  if (!portalActive && livingEnemyCount() === 0) {
-    portalActive = true;
-    playPortalSound();
-    updateHud();
-  }
-}
-
-function spawnBossWeaponDrop(enemy) {
-  pickups.push({
-    type: "bossWeapon",
-    x: enemy.x,
-    y: enemy.y,
-    radius: 0.28,
-    amount: 0,
-    alive: true,
-  });
-}
-
-function clearEnemiesCheat() {
-  for (const enemy of enemies) {
-    if (!enemy.alive) continue;
-    enemy.alive = false;
-    if (enemy.type === "boss") spawnBossWeaponDrop(enemy);
-  }
-  portalActive = true;
-  playPortalSound();
-  updateHud();
-}
-
-function runCheat(raw) {
-  const cheat = raw.trim().toLowerCase();
-  if (!cheat) {
-    setCheatStatus("Enter a cheat code");
-    return;
-  }
-
-  if (cheat === "/help" || cheat === "help") {
-    const helpText = "Cheats: meow(minigun) | furball(god) | catnip(refill) | zoomies(speed) | hiss(clear lvl) | nap#(goto level) | resetcheats(reset)";
-    setCheatStatus(helpText);
-    addCheatHistory("/help", "listed cheats");
-    return;
-  }
-
-  if (cheat === "meow") {
-    PLAYER.hasMinigun = true;
-    PLAYER.weaponMode = "minigun";
-    PLAYER.ammo = Math.min(300, PLAYER.ammo + 80);
-    setCheatStatus("Meow: Minigun unlocked");
-    addCheatHistory("meow", "minigun unlocked");
-    updateHud();
-    return;
-  }
-  if (cheat === "furball") {
-    godMode = !godMode;
-    setCheatStatus(`Furball: Infinite health ${godMode ? "ON" : "OFF"}`);
-    addCheatHistory("furball", `god ${godMode ? "on" : "off"}`);
-    updateHud();
-    return;
-  }
-  if (cheat === "catnip") {
-    PLAYER.health = PLAYER.maxHealth;
-    PLAYER.ammo = 300;
-    setCheatStatus("Catnip: Health and ammo maxed");
-    addCheatHistory("catnip", "restored");
-    updateHud();
-    return;
-  }
-  if (cheat === "zoomies") {
-    speedBoost = !speedBoost;
-    setCheatStatus(`Zoomies: Speed boost ${speedBoost ? "ON" : "OFF"}`);
-    addCheatHistory("zoomies", `speed ${speedBoost ? "on" : "off"}`);
-    updateHud();
-    return;
-  }
-  if (cheat === "hiss") {
-    clearEnemiesCheat();
-    setCheatStatus("Hiss: Level cleared");
-    addCheatHistory("hiss", "level cleared");
-    return;
-  }
-  if (cheat === "resetcheats") {
-    godMode = false;
-    speedBoost = false;
-    PLAYER.hasMinigun = false;
-    PLAYER.weaponMode = "gun";
-    setCheatStatus("ResetCheats: Cheats disabled");
-    addCheatHistory("resetcheats", "all off");
-    updateHud();
-    return;
-  }
-
-  const napMatch = cheat.match(/^nap(\d+)$/);
-  if (napMatch) {
-    const levelNum = Number.parseInt(napMatch[1], 10);
-    if (!Number.isFinite(levelNum) || levelNum < 1 || levelNum > LEVELS.length) {
-      setCheatStatus(`Nap: level must be 1-${LEVELS.length}`);
-      addCheatHistory(cheat, "invalid level");
+function handleInputBindings(): void {
+  window.addEventListener("keydown", (e) => {
+    if (e.code === "Tab") {
+      e.preventDefault();
+      toggleCheatConsole();
       return;
     }
 
-    gameOver = false;
-    victory = false;
-    startLevel(levelNum - 1, false);
-    setCheatStatus(`Nap: jumped to level ${levelNum}`);
-    addCheatHistory(cheat, `level ${levelNum}`);
-    return;
-  }
+    if (cheatOpen) return;
 
-  setCheatStatus("Unknown cheat");
-  addCheatHistory(cheat, "unknown");
-}
-
-function applyHitDamage(enemy, dmg) {
-  enemy.health -= dmg;
-  if (enemy.health > 0) return;
-  enemy.alive = false;
-  playEnemyDeathSound();
-  if (enemy.type === "boss") {
-    spawnBossWeaponDrop(enemy);
-  }
-}
-
-function fireGun() {
-  if (PLAYER.ammo <= 0) return;
-  PLAYER.ammo -= 1;
-  fireCooldown = 0.2;
-  muzzleFlash = 0.06;
-  playGunSound();
-
-  let bestEnemy = null;
-  let bestScore = Number.POSITIVE_INFINITY;
-
-  for (const enemy of enemies) {
-    if (!enemy.alive) continue;
-    const dx = enemy.x - PLAYER.x;
-    const dy = enemy.y - PLAYER.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > 11) continue;
-
-    const enemyAngle = Math.atan2(dy, dx);
-    const delta = Math.abs(normalizeAngle(enemyAngle - PLAYER.angle));
-    if (delta > 0.1) continue;
-    if (!lineOfSight(PLAYER.x, PLAYER.y, enemy.x, enemy.y)) continue;
-
-    const score = delta * 3 + dist * 0.05;
-    if (score < bestScore) {
-      bestScore = score;
-      bestEnemy = enemy;
+    if (e.code in input) {
+      input[e.code as keyof InputState] = true;
+      if (e.code === "Space") jumpQueued = true;
+      return;
     }
-  }
 
-  if (bestEnemy) applyHitDamage(bestEnemy, 1);
-}
-
-function fireMinigun() {
-  if (PLAYER.ammo <= 0) return;
-  PLAYER.ammo -= 1;
-  fireCooldown = 0.06;
-  muzzleFlash = 0.05;
-  playGunSound();
-
-  let bestEnemy = null;
-  let bestScore = Number.POSITIVE_INFINITY;
-  for (const enemy of enemies) {
-    if (!enemy.alive) continue;
-    const dx = enemy.x - PLAYER.x;
-    const dy = enemy.y - PLAYER.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > 12) continue;
-    const enemyAngle = Math.atan2(dy, dx);
-    const spread = (Math.random() - 0.5) * 0.05;
-    const delta = Math.abs(normalizeAngle(enemyAngle - (PLAYER.angle + spread)));
-    if (delta > 0.14) continue;
-    if (!lineOfSight(PLAYER.x, PLAYER.y, enemy.x, enemy.y)) continue;
-    const score = delta * 2.5 + dist * 0.04;
-    if (score < bestScore) {
-      bestScore = score;
-      bestEnemy = enemy;
+    if (e.code === "KeyE") {
+      toggleWeapon();
+      return;
     }
-  }
-  if (bestEnemy) applyHitDamage(bestEnemy, 1);
-}
 
-function spawnCannonBurst(x, y, power = 1) {
-  cannonBursts.push({
-    x,
-    y,
-    power,
-    life: 0.32,
-    maxLife: 0.32,
+    if (e.code === "KeyM") {
+      toggleMusic();
+      return;
+    }
+
+    if (e.code === "KeyN") {
+      minimapSizeIndex = (minimapSizeIndex + 1) % MINIMAP_SIZES.length;
+      applyMinimapSize();
+      return;
+    }
+
+    if (e.code === "KeyR") {
+      resetRun();
+    }
+  });
+
+  window.addEventListener("keyup", (e) => {
+    if (e.code in input) input[e.code as keyof InputState] = false;
+  });
+
+  window.addEventListener("mousedown", (e) => {
+    if (cheatOpen) return;
+    initAudio();
+    tryAcquirePointerLock();
+
+    if (e.button === 0) {
+      input.MouseLeft = true;
+      return;
+    }
+
+    if (e.button === 2) {
+      e.preventDefault();
+      input.MouseRight = true;
+      grenadeChargeStart = performance.now();
+    }
+
+    if (e.button === 1) {
+      e.preventDefault();
+      throwSmokeGrenade();
+    }
+  });
+
+  window.addEventListener("mouseup", (e) => {
+    if (e.button === 0) input.MouseLeft = false;
+    if (e.button === 2 && input.MouseRight) {
+      e.preventDefault();
+      input.MouseRight = false;
+      const heldSeconds = Math.max(0, (performance.now() - grenadeChargeStart) / 1000);
+      setGrenadeChargeHud(false, 0);
+      throwGrenade(heldSeconds);
+    }
+  });
+
+  canvas.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+  });
+  canvas.addEventListener("auxclick", (e) => {
+    if (e.button === 1) e.preventDefault();
+  });
+
+  window.addEventListener("mousemove", (e) => {
+    if (cheatOpen) return;
+    const dragTurning = (e.buttons & 1) === 1;
+    if (!pointerLocked && !dragTurning) return;
+    yaw += e.movementX * 0.0026;
+    pitch += e.movementY * 0.0022;
+    pitch = Math.max(-1.28, Math.min(1.28, pitch));
+  });
+
+  document.addEventListener("pointerlockchange", () => {
+    pointerLocked = document.pointerLockElement === canvas;
+  });
+
+  document.addEventListener("pointerlockerror", () => {
+    pointerLocked = false;
+    setCheatStatus("Pointer lock blocked. Hold left mouse and drag to turn.");
+  });
+
+  canvas.addEventListener("click", () => {
+    initAudio();
+    tryAcquirePointerLock();
+  });
+
+  cheatInputEl.addEventListener("keydown", (e) => {
+    if (e.code === "Enter") {
+      e.preventDefault();
+      runCheat(cheatInputEl.value);
+      cheatInputEl.select();
+      return;
+    }
+
+    if (e.code === "Escape" || e.code === "Tab") {
+      e.preventDefault();
+      toggleCheatConsole();
+    }
   });
 }
 
-function fireCannon() {
-  if (PLAYER.ammo < 2) return;
-  PLAYER.ammo -= 2;
-  fireCooldown = 0.62;
-  muzzleFlash = 0.16;
-  recoilKick = Math.max(recoilKick, 11);
-  playCannonSound();
+function gameLoop(now: number): void {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
 
-  const candidates = [];
-  for (const enemy of enemies) {
-    if (!enemy.alive) continue;
-    const dx = enemy.x - PLAYER.x;
-    const dy = enemy.y - PLAYER.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist > 13) continue;
-    const enemyAngle = Math.atan2(dy, dx);
-    const delta = Math.abs(normalizeAngle(enemyAngle - PLAYER.angle));
-    if (delta > 0.24) continue;
-    if (!lineOfSight(PLAYER.x, PLAYER.y, enemy.x, enemy.y)) continue;
-    candidates.push({ enemy, dist });
-  }
-
-  candidates.sort((a, b) => a.dist - b.dist);
-  for (let i = 0; i < Math.min(4, candidates.length); i += 1) {
-    applyHitDamage(candidates[i].enemy, 4);
-    spawnCannonBurst(candidates[i].enemy.x, candidates[i].enemy.y, 1 + (3 - i) * 0.2);
-  }
-
-  if (candidates.length === 0) {
-    const fx = PLAYER.x + Math.cos(PLAYER.angle) * 8;
-    const fy = PLAYER.y + Math.sin(PLAYER.angle) * 8;
-    spawnCannonBurst(fx, fy, 0.9);
-  }
-}
-
-function shoot() {
-  if (fireCooldown > 0 || gameOver || victory) return;
-
-  if (PLAYER.weaponMode === "cannon" && PLAYER.hasCannon) {
-    fireCannon();
-  } else if (PLAYER.weaponMode === "minigun" && PLAYER.hasMinigun) {
-    fireMinigun();
+  if (input.MouseRight && !cheatOpen) {
+    const heldSeconds = Math.max(0, (performance.now() - grenadeChargeStart) / 1000);
+    setGrenadeChargeHud(true, Math.min(1, heldSeconds / 1.25));
   } else {
-    fireGun();
-  }
-  updateHud();
-}
-
-function tryEnterPortal() {
-  if (!portalActive || gameOver || victory) return;
-  const dist = Math.hypot(PLAYER.x - portal.x, PLAYER.y - portal.y);
-  if (dist > PLAYER.radius + portal.radius) return;
-
-  if (currentLevel < LEVELS.length - 1) {
-    startLevel(currentLevel + 1, false);
-    return;
+    setGrenadeChargeHud(false, 0);
   }
 
-  victory = true;
-}
+  if (!cheatOpen) {
+    updatePlayer(dt);
+  }
 
-function update(dt) {
   if (!gameOver && !victory) {
-    let moveX = 0;
-    let moveY = 0;
-    const forwardX = Math.cos(PLAYER.angle);
-    const forwardY = Math.sin(PLAYER.angle);
-    const rightX = Math.cos(PLAYER.angle + Math.PI / 2);
-    const rightY = Math.sin(PLAYER.angle + Math.PI / 2);
+    updateEnemies(dt);
+    updateEnemyShots(dt);
+    updateGrenades(dt);
+    updateSmokeClouds(dt);
+    updatePickups(dt);
+    updatePortal(dt);
 
-    if (input.KeyW) {
-      moveX += forwardX;
-      moveY += forwardY;
-    }
-    if (input.KeyS) {
-      moveX -= forwardX;
-      moveY -= forwardY;
-    }
-    if (input.KeyA) {
-      moveX -= rightX;
-      moveY -= rightY;
-    }
-    if (input.KeyD) {
-      moveX += rightX;
-      moveY += rightY;
-    }
-
-    const length = Math.hypot(moveX, moveY);
-    if (length > 0) {
-      moveX /= length;
-      moveY /= length;
-      const moveSpeed = PLAYER.speed * (speedBoost ? 1.65 : 1);
-      tryMove(PLAYER.x + moveX * moveSpeed * dt, PLAYER.y + moveY * moveSpeed * dt);
-    }
-
-    if (input.ArrowLeft) PLAYER.angle -= PLAYER.turnSpeed * dt;
-    if (input.ArrowRight) PLAYER.angle += PLAYER.turnSpeed * dt;
-
-    if (input.jumpRequested && PLAYER.onGround) {
-      PLAYER.vz = JUMP_VELOCITY;
-      PLAYER.onGround = false;
-    }
-    input.jumpRequested = false;
+    if (!portalActive && enemies.filter((e) => e.health > 0).length === 0) setPortalActive(true);
   }
 
-  PLAYER.vz -= GRAVITY * dt;
-  PLAYER.z += PLAYER.vz * dt;
-  const floorHeight = getFloorHeightAt(PLAYER.x, PLAYER.y);
-  if (PLAYER.z <= floorHeight) {
-    PLAYER.z = floorHeight;
-    PLAYER.vz = 0;
-    PLAYER.onGround = true;
-  } else {
-    PLAYER.onGround = false;
-  }
-
-  fireCooldown = Math.max(0, fireCooldown - dt);
-  muzzleFlash = Math.max(0, muzzleFlash - dt);
-  recoilKick *= 0.84;
-
-  for (let i = cannonBursts.length - 1; i >= 0; i -= 1) {
-    const burst = cannonBursts[i];
-    burst.life -= dt;
-    if (burst.life <= 0) cannonBursts.splice(i, 1);
-  }
-
-  if (input.shootRequested || input.MouseLeft) {
-    shoot();
-    input.shootRequested = false;
-  }
-
-  updateEnemies(dt);
-  updateEnemyShots(dt);
-  updatePickups();
-  updatePlatformChallenge();
-  tryEnterPortal();
+  updateHud();
+  drawMinimap();
+  scene.render();
 }
 
-function renderOverlay() {
-  if (!gameOver && !victory) return;
-
-  ctx.fillStyle = "#000000aa";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#f4e6cf";
-  ctx.textAlign = "center";
-  ctx.font = "bold 52px Trebuchet MS";
-  ctx.fillText(gameOver ? "YOU GOT SCRATCHED" : "YOU CLEARED ALL LEVELS", canvas.width / 2, canvas.height / 2 - 10);
-  ctx.font = "24px Trebuchet MS";
-  ctx.fillText("Press R to Restart", canvas.width / 2, canvas.height / 2 + 34);
+function init(): void {
+  applyMinimapSize();
+  makeGunModel();
+  handleInputBindings();
+  startLevel(0, true);
+  engine.runRenderLoop(() => gameLoop(performance.now()));
+  window.addEventListener("resize", () => engine.resize());
 }
 
-function frame(time) {
-  const dt = Math.min(0.033, (time - lastTime) / 1000 || 0);
-  lastTime = time;
-
-  update(dt);
-  render3D();
-  renderOverlay();
-
-  requestAnimationFrame(frame);
-}
-
-document.addEventListener("keydown", (e) => {
-  if (e.code === "Tab") {
-    e.preventDefault();
-    toggleCheatConsole();
-    return;
-  }
-  if (cheatOpen) return;
-  initAudio();
-  if (e.code === "Space") {
-    e.preventDefault();
-    input.jumpRequested = true;
-  } else if (e.code in input) {
-    input[e.code] = true;
-  }
-  if (e.code === "KeyE") toggleWeapon();
-  if (e.code === "KeyN") cycleMinimapZoom();
-  if (e.code === "KeyM") toggleMusic();
-  if (e.code === "KeyR") resetGame();
-});
-
-document.addEventListener("keyup", (e) => {
-  if (cheatOpen) return;
-  if (e.code in input && e.code !== "Space") input[e.code] = false;
-});
-
-cheatInputEl.addEventListener("keydown", (e) => {
-  if (e.code === "Enter") {
-    e.preventDefault();
-    runCheat(cheatInputEl.value);
-    cheatInputEl.select();
-    return;
-  }
-  if (e.code === "Escape" || e.code === "Tab") {
-    e.preventDefault();
-    toggleCheatConsole();
-  }
-});
-
-canvas.addEventListener("click", () => {
-  if (cheatOpen) return;
-  initAudio();
-  if (!hasPointerLock && document.pointerLockElement !== canvas) {
-    canvas.requestPointerLock();
-  }
-});
-
-canvas.addEventListener("mousedown", (e) => {
-  if (cheatOpen) return;
-  if (e.button !== 0) return;
-  initAudio();
-  input.MouseLeft = true;
-  if (!hasPointerLock && document.pointerLockElement !== canvas) {
-    canvas.requestPointerLock();
-  }
-});
-
-document.addEventListener("mouseup", (e) => {
-  if (e.button === 0) input.MouseLeft = false;
-});
-
-document.addEventListener("pointerlockchange", () => {
-  hasPointerLock = document.pointerLockElement === canvas;
-});
-
-document.addEventListener("mousemove", (e) => {
-  if (!hasPointerLock || gameOver || victory) return;
-  PLAYER.angle += e.movementX * 0.0022;
-});
-
-resetGame();
-requestAnimationFrame(frame);
+init();
