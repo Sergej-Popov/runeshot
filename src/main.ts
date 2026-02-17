@@ -5,12 +5,14 @@ import {
   DynamicTexture,
   Engine,
   HemisphericLight,
+  Node,
   Mesh,
   MeshBuilder,
   ParticleSystem,
   PointLight,
   Ray,
   Scene,
+  SceneLoader,
   StandardMaterial,
   Texture,
   TransformNode,
@@ -18,6 +20,7 @@ import {
   Vector3,
   VertexData,
 } from "@babylonjs/core";
+import "@babylonjs/loaders/OBJ";
 import {
   ammoEl,
   bossBarEl,
@@ -68,7 +71,7 @@ type WeaponMode = "gun" | "cannon" | "minigun";
 type EnemyType = "normal" | "boss" | "kitten";
 
 type EnemyEntity = {
-  mesh: Mesh;
+  mesh: TransformNode;
   type: EnemyType;
   health: number;
   maxHealth: number;
@@ -372,6 +375,9 @@ let pickups: Pickup[] = [];
 let grenadeProjectiles: GrenadeProjectile[] = [];
 let grenadeBursts: GrenadeBurst[] = [];
 let smokeClouds: SmokeCloud[] = [];
+let enemyModelTemplate: TransformNode | null = null;
+let enemyModelHeight = 1;
+let enemyModelId = 0;
 let portalMesh: Mesh | null = null;
 let gunRoot: TransformNode | null = null;
 let gunSlide: Mesh | null = null;
@@ -704,8 +710,111 @@ function buildLevelGeometry(): void {
   portalMesh.isVisible = false;
 }
 
+async function loadEnemyModelTemplate(): Promise<void> {
+  if (enemyModelTemplate) return;
+
+  try {
+    const imported = await SceneLoader.ImportMeshAsync("", "/models/cat/", "12221_Cat_v1_l3.obj", scene);
+    const template = new TransformNode("cat-template-root", scene);
+    for (const mesh of imported.meshes) {
+      if (mesh.parent === null) mesh.parent = template;
+      mesh.isPickable = false;
+    }
+
+    template.setEnabled(false);
+    template.computeWorldMatrix(true);
+    const bounds = template.getHierarchyBoundingVectors(true);
+    enemyModelHeight = Math.max(0.1, bounds.max.y - bounds.min.y);
+    enemyModelTemplate = template;
+  } catch (err) {
+    console.warn("Could not load cat model from src/models/cat; using procedural cat.", err);
+    enemyModelTemplate = null;
+  }
+}
+
+function instantiateEnemyModel(type: EnemyType, pos: Vector3): TransformNode | null {
+  if (!enemyModelTemplate) return null;
+  const id = enemyModelId++;
+  const clone = enemyModelTemplate.clone(`cat-model-${type}-${id}`, null) as TransformNode | null;
+  if (!clone) return null;
+
+  const actorRoot = new TransformNode(`cat-actor-${type}-${id}`, scene);
+  actorRoot.position.set(pos.x, 0, pos.z);
+
+  clone.parent = actorRoot;
+  clone.setEnabled(true);
+  clone.position.set(0, 0, 0);
+  // Imported cat forward axis differs from gameplay facing axis.
+  // Keep this correction on visual child so lookAt() on actor root won't override it.
+  clone.rotation.set(-Math.PI / 2, 0, 0);
+  for (const child of clone.getChildMeshes(false)) child.isPickable = true;
+
+  const targetHeight = type === "boss" ? 3.6 : type === "kitten" ? 1.45 : 2.15;
+  const scale = targetHeight / enemyModelHeight;
+  clone.scaling.set(scale, scale, scale);
+  actorRoot.computeWorldMatrix(true);
+  const bounds = actorRoot.getHierarchyBoundingVectors(true);
+  actorRoot.position.y += -bounds.min.y + 0.02;
+  actorRoot.rotation.y = Math.PI;
+  return actorRoot;
+}
+
 function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
   const pos = mapToWorld(mx, my);
+  const importedMesh = instantiateEnemyModel(type, pos);
+  if (importedMesh) {
+    const mesh = importedMesh;
+    if (type === "boss") {
+      return {
+        mesh,
+        type,
+        health: 42,
+        maxHealth: 42,
+        speed: 1.3,
+        meleeDamage: 22,
+        meleeCooldown: 0.8,
+        shootCooldown: 0.5,
+        shootDelay: 0.85,
+        bulletSpeed: 13.5,
+        rangedDamage: 20,
+        spawnCooldown: 3.8,
+      };
+    }
+
+    if (type === "kitten") {
+      return {
+        mesh,
+        type,
+        health: 1,
+        maxHealth: 1,
+        speed: 5.3,
+        meleeDamage: 8,
+        meleeCooldown: 0.3,
+        shootCooldown: 999,
+        shootDelay: 999,
+        bulletSpeed: 0,
+        rangedDamage: 0,
+        spawnCooldown: 999,
+      };
+    }
+
+    const levelScale = currentLevel + 1;
+    return {
+      mesh,
+      type,
+      health: 2 + levelScale,
+      maxHealth: 2 + levelScale,
+      speed: 1.8 + Math.min(1.2, currentLevel * 0.14),
+      meleeDamage: 8 + currentLevel * 2,
+      meleeCooldown: 0.2,
+      shootCooldown: 0.8,
+      shootDelay: Math.max(0.42, 1.05 - currentLevel * 0.08),
+      bulletSpeed: Math.max(8.5, 11.6 - (currentLevel === 3 ? 1.6 : 0)),
+      rangedDamage: 8 + currentLevel * 2,
+      spawnCooldown: 999,
+    };
+  }
+
   const size = type === "boss" ? 1.38 : type === "kitten" ? 0.62 : 1.0;
   const body = MeshBuilder.CreateSphere(`cat-body-${type}`, {
     diameterX: 1.05 * size,
@@ -1121,7 +1230,13 @@ function damageEnemy(enemy: EnemyEntity, amount: number): void {
 }
 
 function findEnemyByMesh(mesh: AbstractMesh): EnemyEntity | undefined {
-  return enemies.find((e) => e.mesh === mesh && e.health > 0);
+  let cursor: Node | null = mesh;
+  while (cursor) {
+    const found = enemies.find((e) => e.mesh === cursor && e.health > 0);
+    if (found) return found;
+    cursor = cursor.parent;
+  }
+  return undefined;
 }
 
 function fireWeapon(): void {
@@ -1996,13 +2111,16 @@ function gameLoop(now: number): void {
   scene.render();
 }
 
-function init(): void {
+async function init(): Promise<void> {
   applyMinimapSize();
   makeGunModel();
   handleInputBindings();
+  await loadEnemyModelTemplate();
   startLevel(0, true);
   engine.runRenderLoop(() => gameLoop(performance.now()));
   window.addEventListener("resize", () => engine.resize());
 }
 
-init();
+init().catch((err) => {
+  console.error("Game init failed", err);
+});

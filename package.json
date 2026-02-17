@@ -12,6 +12,7 @@
   },
   "devDependencies": {
     "@babylonjs/core": "^7.42.0",
+    "@babylonjs/loaders": "^7.42.0",
     "typescript": "^5.7.3",
     "vite": "^6.2.0",
     "vitest": "^3.0.5"
