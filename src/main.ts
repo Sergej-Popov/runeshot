@@ -54,6 +54,7 @@ import {
   playCannonSound,
   playCatMeowSound,
   playEnemyDeathSound,
+  playFlamethrowerSound,
   playGrenadeBounceSound,
   playGrenadeExplodeSound,
   playGunSound,
@@ -74,7 +75,7 @@ import {
   parseNapCheat,
 } from "./game/state";
 
-type WeaponMode = "gun" | "cannon" | "minigun";
+type WeaponMode = "gun" | "cannon" | "minigun" | "flamethrower";
 type EnemyType = "normal" | "boss" | "kitten";
 
 type EnemyEntity = {
@@ -106,7 +107,7 @@ type EnemyShot = {
   damage: number;
 };
 
-type PickupKind = "health" | "ammo" | "grenade";
+type PickupKind = "health" | "ammo" | "grenade" | "flame";
 type Pickup = {
   mesh: Mesh;
   kind: PickupKind;
@@ -146,6 +147,13 @@ type SmokeCloud = {
   stopped: boolean;
 };
 
+type FlameStream = {
+  nozzle: Mesh;
+  core: ParticleSystem;
+  smoke: ParticleSystem;
+  embers: ParticleSystem;
+};
+
 type InputState = {
   KeyW: boolean;
   KeyA: boolean;
@@ -175,6 +183,7 @@ const MAX_STAMINA = 5;
 const STAMINA_DRAIN_PER_SEC = 1;
 const STAMINA_RECOVER_PER_SEC = 1;
 const STAMINA_RECOVER_UNLOCK = 1.5;
+const FLAMETHROWER_MAX_FUEL = 220;
 const PIT_DEPTH = PIT_FLOOR_HEIGHT;
 const MINIMAP_SIZES = [150, 190, 230];
 const TRAMPOLINE_RADIUS = TILE_SIZE * 0.27;
@@ -334,12 +343,21 @@ const pickupAmmoBodyMat = new StandardMaterial("pickup-ammo-body", scene);
 pickupAmmoBodyMat.diffuseColor = new Color3(0.2, 0.26, 0.32);
 const pickupGrenadeBodyMat = new StandardMaterial("pickup-grenade-body", scene);
 pickupGrenadeBodyMat.diffuseColor = new Color3(0.2, 0.34, 0.2);
+const pickupFlameBodyMat = new StandardMaterial("pickup-flame-body", scene);
+pickupFlameBodyMat.diffuseColor = new Color3(0.42, 0.18, 0.12);
+pickupFlameBodyMat.emissiveColor = new Color3(0.2, 0.06, 0.04);
 const pickupAmmoAccentMat = new StandardMaterial("pickup-ammo-accent", scene);
 pickupAmmoAccentMat.diffuseColor = new Color3(0.85, 0.67, 0.25);
 pickupAmmoAccentMat.emissiveColor = new Color3(0.2, 0.14, 0.03);
 const pickupGrenadeAccentMat = new StandardMaterial("pickup-grenade-accent", scene);
 pickupGrenadeAccentMat.diffuseColor = new Color3(0.68, 0.88, 0.32);
 pickupGrenadeAccentMat.emissiveColor = new Color3(0.22, 0.35, 0.1);
+const pickupFlameAccentMat = new StandardMaterial("pickup-flame-accent", scene);
+pickupFlameAccentMat.diffuseColor = new Color3(0.96, 0.45, 0.14);
+pickupFlameAccentMat.emissiveColor = new Color3(0.4, 0.14, 0.03);
+const pickupFlameStripeMat = new StandardMaterial("pickup-flame-stripe", scene);
+pickupFlameStripeMat.diffuseColor = new Color3(0.08, 0.05, 0.05);
+pickupFlameStripeMat.emissiveColor = new Color3(0.02, 0.01, 0.01);
 
 const pickupAuraHealthMat = new StandardMaterial("pickup-aura-health", scene);
 pickupAuraHealthMat.emissiveColor = new Color3(0.5, 1.0, 0.65);
@@ -350,6 +368,10 @@ const pickupAuraAmmoMat = new StandardMaterial("pickup-aura-ammo", scene);
 pickupAuraAmmoMat.emissiveColor = new Color3(0.45, 0.86, 1.0);
 pickupAuraAmmoMat.diffuseColor = new Color3(0.12, 0.25, 0.35);
 pickupAuraAmmoMat.alpha = 0.24;
+const pickupAuraFlameMat = new StandardMaterial("pickup-aura-flame", scene);
+pickupAuraFlameMat.emissiveColor = new Color3(1.0, 0.42, 0.14);
+pickupAuraFlameMat.diffuseColor = new Color3(0.35, 0.12, 0.07);
+pickupAuraFlameMat.alpha = 0.28;
 
 const pickupSparkHealthMat = new StandardMaterial("pickup-spark-health", scene);
 pickupSparkHealthMat.emissiveColor = new Color3(0.7, 1.0, 0.78);
@@ -358,6 +380,9 @@ pickupSparkHealthMat.diffuseColor = new Color3(0.2, 0.45, 0.25);
 const pickupSparkAmmoMat = new StandardMaterial("pickup-spark-ammo", scene);
 pickupSparkAmmoMat.emissiveColor = new Color3(0.62, 0.9, 1.0);
 pickupSparkAmmoMat.diffuseColor = new Color3(0.16, 0.3, 0.44);
+const pickupSparkFlameMat = new StandardMaterial("pickup-spark-flame", scene);
+pickupSparkFlameMat.emissiveColor = new Color3(1.0, 0.58, 0.22);
+pickupSparkFlameMat.diffuseColor = new Color3(0.45, 0.2, 0.08);
 
 const grenadeFlameMat = new StandardMaterial("grenade-flame", scene);
 grenadeFlameMat.emissiveColor = new Color3(1.0, 0.62, 0.2);
@@ -401,6 +426,7 @@ let pickups: Pickup[] = [];
 let grenadeProjectiles: GrenadeProjectile[] = [];
 let grenadeBursts: GrenadeBurst[] = [];
 let smokeClouds: SmokeCloud[] = [];
+let flameStream: FlameStream | null = null;
 let enemyModelContainer: AssetContainer | null = null;
 let enemyModelHeight = 1;
 let enemyModelId = 0;
@@ -424,6 +450,8 @@ let godMode = false;
 let cheatOpen = false;
 let hasCannon = false;
 let hasMinigun = false;
+let hasFlamethrower = false;
+let flameFuel = 0;
 let weaponMode: WeaponMode = "gun";
 let jumpQueued = false;
 let isGrounded = true;
@@ -528,7 +556,10 @@ function updateHud(): void {
   ammoEl.textContent = `Ammo: ${ammo}`;
   grenadesEl.textContent = `Grenades: ${grenades}/3`;
   smokeGrenadesEl.textContent = `Smoke: ${smokeGrenades}/2`;
-  weaponEl.textContent = `Weapon: ${weaponMode[0].toUpperCase()}${weaponMode.slice(1)}`;
+  const weaponName = weaponMode === "flamethrower"
+    ? `Flamethrower (${Math.max(0, Math.ceil(flameFuel))})`
+    : `${weaponMode[0].toUpperCase()}${weaponMode.slice(1)}`;
+  weaponEl.textContent = `Weapon: ${weaponName}`;
 
   const alive = enemies.filter((e) => e.health > 0).length;
   enemyEl.textContent = portalActive ? "Portal: Enter!" : `Cat Fiends: ${alive}/${enemies.length}`;
@@ -644,7 +675,122 @@ function makeGunModel(): void {
   rear.material = gunMat;
 }
 
+function stopFlameStream(): void {
+  if (!flameStream) return;
+  flameStream.core.stop();
+  flameStream.smoke.stop();
+  flameStream.embers.stop();
+}
+
+function disposeFlameStream(): void {
+  if (!flameStream) return;
+  flameStream.core.dispose();
+  flameStream.smoke.dispose();
+  flameStream.embers.dispose();
+  flameStream.nozzle.dispose();
+  flameStream = null;
+}
+
+function ensureFlameStream(): FlameStream {
+  if (flameStream) return flameStream;
+  const nozzle = MeshBuilder.CreateBox("flame-nozzle", { size: 0.02 }, scene);
+  nozzle.parent = camera;
+  nozzle.position = new Vector3(0.27, -0.16, 0.86);
+  nozzle.isVisible = false;
+  nozzle.isPickable = false;
+
+  const core = new ParticleSystem("flamethrower-core", 1100, scene);
+  core.particleTexture = fireParticleTex;
+  core.emitter = nozzle;
+  core.minEmitBox = new Vector3(-0.03, -0.03, -0.03);
+  core.maxEmitBox = new Vector3(0.03, 0.03, 0.03);
+  core.color1 = new Color4(1.0, 0.86, 0.45, 0.95);
+  core.color2 = new Color4(1.0, 0.42, 0.12, 0.85);
+  core.colorDead = new Color4(0.25, 0.1, 0.02, 0);
+  core.minSize = 0.22;
+  core.maxSize = 0.6;
+  core.minLifeTime = 0.14;
+  core.maxLifeTime = 0.32;
+  core.emitRate = 0;
+  core.isLocal = true;
+  core.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+  core.direction1 = new Vector3(-0.11, -0.06, 1.0);
+  core.direction2 = new Vector3(0.11, 0.09, 1.0);
+  core.gravity = new Vector3(0, -1.2, 0);
+  core.minEmitPower = 5.8;
+  core.maxEmitPower = 10.8;
+  core.updateSpeed = 0.012;
+
+  const embers = new ParticleSystem("flamethrower-embers", 850, scene);
+  embers.particleTexture = fireParticleTex;
+  embers.emitter = nozzle;
+  embers.minEmitBox = new Vector3(-0.03, -0.03, -0.03);
+  embers.maxEmitBox = new Vector3(0.03, 0.03, 0.03);
+  embers.color1 = new Color4(1.0, 0.55, 0.18, 0.85);
+  embers.color2 = new Color4(1.0, 0.3, 0.05, 0.72);
+  embers.colorDead = new Color4(0.12, 0.04, 0.02, 0);
+  embers.minSize = 0.06;
+  embers.maxSize = 0.14;
+  embers.minLifeTime = 0.18;
+  embers.maxLifeTime = 0.46;
+  embers.emitRate = 0;
+  embers.isLocal = true;
+  embers.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+  embers.direction1 = new Vector3(-0.15, -0.08, 1.0);
+  embers.direction2 = new Vector3(0.15, 0.12, 1.0);
+  embers.gravity = new Vector3(0, -3.1, 0);
+  embers.minEmitPower = 7.2;
+  embers.maxEmitPower = 13.2;
+  embers.updateSpeed = 0.012;
+
+  const smoke = new ParticleSystem("flamethrower-smoke", 1000, scene);
+  smoke.particleTexture = smokeParticleTex;
+  smoke.emitter = nozzle;
+  smoke.minEmitBox = new Vector3(-0.08, -0.06, -0.08);
+  smoke.maxEmitBox = new Vector3(0.08, 0.06, 0.08);
+  smoke.color1 = new Color4(0.36, 0.34, 0.33, 0.42);
+  smoke.color2 = new Color4(0.14, 0.14, 0.14, 0.3);
+  smoke.colorDead = new Color4(0.04, 0.04, 0.04, 0);
+  smoke.minSize = 0.14;
+  smoke.maxSize = 0.48;
+  smoke.minLifeTime = 0.35;
+  smoke.maxLifeTime = 0.95;
+  smoke.emitRate = 0;
+  smoke.isLocal = true;
+  smoke.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  smoke.direction1 = new Vector3(-0.09, 0.02, 1.0);
+  smoke.direction2 = new Vector3(0.09, 0.22, 1.0);
+  smoke.gravity = new Vector3(0, 0.72, 0);
+  smoke.minEmitPower = 3.2;
+  smoke.maxEmitPower = 6.2;
+  smoke.updateSpeed = 0.02;
+
+  flameStream = { nozzle, core, smoke, embers };
+  return flameStream;
+}
+
+function updateFlameStreamVisual(active: boolean): void {
+  const stream = ensureFlameStream();
+  stream.nozzle.position.set(0.27, -0.16, 0.86);
+
+  if (!active) {
+    stream.core.emitRate = 0;
+    stream.embers.emitRate = 0;
+    stream.smoke.emitRate = 0;
+    stopFlameStream();
+    return;
+  }
+
+  stream.core.emitRate = 760;
+  stream.embers.emitRate = 430;
+  stream.smoke.emitRate = 220;
+  stream.core.start();
+  stream.embers.start();
+  stream.smoke.start();
+}
+
 function disposeLevel(): void {
+  disposeFlameStream();
   for (const mesh of [...levelMeshes, ...wallMeshes]) mesh.dispose();
   levelMeshes = [];
   wallMeshes = [];
@@ -1091,7 +1237,13 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
     depth: 0.54,
   }, scene);
   crate.parent = root;
-  crate.material = kind === "health" ? pickupHealthBodyMat : kind === "ammo" ? pickupAmmoBodyMat : pickupGrenadeBodyMat;
+  crate.material = kind === "health"
+    ? pickupHealthBodyMat
+    : kind === "ammo"
+      ? pickupAmmoBodyMat
+      : kind === "grenade"
+        ? pickupGrenadeBodyMat
+        : pickupFlameBodyMat;
 
   if (kind === "health") {
     const crossV = MeshBuilder.CreateBox(`pickup-health-v-${id}`, { width: 0.13, height: 0.28, depth: 0.06 }, scene);
@@ -1127,7 +1279,7 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
       round.rotation.z = Math.PI / 2;
       round.material = pickupAmmoAccentMat;
     }
-  } else {
+  } else if (kind === "grenade") {
     const body = MeshBuilder.CreateSphere(`pickup-grenade-body-${id}`, {
       diameterX: 0.28,
       diameterY: 0.34,
@@ -1143,9 +1295,49 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
     pin.position.y = 0.23;
     pin.rotation.x = Math.PI / 2;
     pin.material = pickupAmmoAccentMat;
+  } else {
+    const tank = MeshBuilder.CreateCylinder(`pickup-flame-tank-${id}`, { diameter: 0.3, height: 0.44, tessellation: 20 }, scene);
+    tank.parent = root;
+    tank.position.y = 0.07;
+    tank.material = pickupFlameBodyMat;
+
+    const tankCap = MeshBuilder.CreateCylinder(`pickup-flame-cap-${id}`, { diameter: 0.24, height: 0.09, tessellation: 20 }, scene);
+    tankCap.parent = root;
+    tankCap.position.y = 0.33;
+    tankCap.material = pickupFlameAccentMat;
+
+    const nozzle = MeshBuilder.CreateCylinder(`pickup-flame-nozzle-${id}`, { diameter: 0.08, height: 0.38, tessellation: 14 }, scene);
+    nozzle.parent = root;
+    nozzle.rotation.z = Math.PI / 2;
+    nozzle.position = new Vector3(0.2, 0.18, 0);
+    nozzle.material = pickupFlameAccentMat;
+
+    const handle = MeshBuilder.CreateTorus(`pickup-flame-handle-${id}`, { diameter: 0.22, thickness: 0.035, tessellation: 20 }, scene);
+    handle.parent = root;
+    handle.position = new Vector3(-0.1, 0.16, 0);
+    handle.rotation.y = Math.PI / 2;
+    handle.material = pickupAmmoAccentMat;
+
+    const stripeA = MeshBuilder.CreateBox(`pickup-flame-stripe-a-${id}`, { width: 0.33, height: 0.05, depth: 0.05 }, scene);
+    stripeA.parent = root;
+    stripeA.position = new Vector3(0, 0.02, 0.16);
+    stripeA.rotation.y = Math.PI * 0.22;
+    stripeA.material = pickupFlameStripeMat;
+
+    const stripeB = MeshBuilder.CreateBox(`pickup-flame-stripe-b-${id}`, { width: 0.33, height: 0.05, depth: 0.05 }, scene);
+    stripeB.parent = root;
+    stripeB.position = new Vector3(0, 0.12, -0.16);
+    stripeB.rotation.y = -Math.PI * 0.22;
+    stripeB.material = pickupFlameStripeMat;
   }
 
-  const auraMat = kind === "health" ? pickupAuraHealthMat : kind === "ammo" ? pickupAuraAmmoMat : pickupAuraHealthMat;
+  const auraMat = kind === "health"
+    ? pickupAuraHealthMat
+    : kind === "ammo"
+      ? pickupAuraAmmoMat
+      : kind === "flame"
+        ? pickupAuraFlameMat
+        : pickupAuraHealthMat;
   const auraA = MeshBuilder.CreateTorus(`pickup-aura-a-${kind}-${id}`, { diameter: 1.1, thickness: 0.045, tessellation: 24 }, scene);
   auraA.parent = root;
   auraA.rotation.x = Math.PI / 2;
@@ -1167,7 +1359,13 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
 
   const light = new PointLight(`pickup-light-${kind}-${id}`, root.position.clone(), scene);
   light.parent = root;
-  light.diffuse = kind === "health" ? new Color3(0.42, 1.0, 0.6) : new Color3(0.32, 0.78, 1.0);
+  light.diffuse = kind === "health"
+    ? new Color3(0.42, 1.0, 0.6)
+    : kind === "ammo"
+      ? new Color3(0.32, 0.78, 1.0)
+      : kind === "flame"
+        ? new Color3(1.0, 0.5, 0.2)
+        : new Color3(0.45, 0.88, 0.42);
   light.specular = light.diffuse.scale(0.8);
   light.intensity = 1.8;
   light.range = 6.5;
@@ -1177,13 +1375,17 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
       ? new Color4(0.48, 1.0, 0.65, 0.42)
       : kind === "ammo"
         ? new Color4(0.4, 0.9, 1.0, 0.4)
-        : new Color4(0.75, 1.0, 0.5, 0.42);
+        : kind === "flame"
+          ? new Color4(1.0, 0.56, 0.2, 0.44)
+          : new Color4(0.75, 1.0, 0.5, 0.42);
   const auraColorB =
     kind === "health"
       ? new Color4(0.2, 0.8, 0.45, 0.2)
       : kind === "ammo"
         ? new Color4(0.2, 0.55, 0.9, 0.2)
-        : new Color4(0.45, 0.8, 0.24, 0.2);
+        : kind === "flame"
+          ? new Color4(0.62, 0.24, 0.08, 0.22)
+          : new Color4(0.45, 0.8, 0.24, 0.2);
 
   const auraSpark = new ParticleSystem(`pickup-aura-${kind}-${id}`, 260, scene);
   auraSpark.particleTexture = smokeParticleTex;
@@ -1229,6 +1431,41 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
   auraDust.updateSpeed = 0.02;
   auraDust.start();
 
+  if (kind === "flame") {
+    const flameJets = new ParticleSystem(`pickup-flame-jet-${id}`, 200, scene);
+    flameJets.particleTexture = fireParticleTex;
+    flameJets.emitter = root;
+    flameJets.minEmitBox = new Vector3(0.16, 0.14, -0.03);
+    flameJets.maxEmitBox = new Vector3(0.25, 0.22, 0.03);
+    flameJets.color1 = new Color4(1.0, 0.8, 0.35, 0.85);
+    flameJets.color2 = new Color4(1.0, 0.4, 0.12, 0.72);
+    flameJets.colorDead = new Color4(0.2, 0.08, 0.02, 0);
+    flameJets.minSize = 0.08;
+    flameJets.maxSize = 0.2;
+    flameJets.minLifeTime = 0.18;
+    flameJets.maxLifeTime = 0.32;
+    flameJets.emitRate = 48;
+    flameJets.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+    flameJets.direction1 = new Vector3(0.4, 0.02, -0.05);
+    flameJets.direction2 = new Vector3(0.8, 0.22, 0.05);
+    flameJets.minEmitPower = 0.12;
+    flameJets.maxEmitPower = 0.44;
+    flameJets.updateSpeed = 0.015;
+    flameJets.start();
+    return {
+      mesh: root,
+      kind,
+      amount,
+      haloA: auraA,
+      haloB: auraB,
+      glow,
+      light,
+      systems: [auraSpark, auraDust, flameJets],
+      baseY: root.position.y,
+      phase: Math.random() * Math.PI * 2,
+    };
+  }
+
   return {
     mesh: root,
     kind,
@@ -1247,6 +1484,7 @@ function spawnPickupsForLevel(): void {
   const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
   const ammoCount = 4;
   const grenadeCount = 1 + Math.floor(currentLevel / 3);
+  const flameCount = currentLevel >= 1 ? 1 + Math.floor(currentLevel / 4) : 0;
   const pickPoint = (index: number): { x: number; y: number } => {
     for (let tries = 0; tries < PICKUP_POINTS.length; tries += 1) {
       const p = PICKUP_POINTS[(index + tries) % PICKUP_POINTS.length];
@@ -1270,6 +1508,11 @@ function spawnPickupsForLevel(): void {
   for (let i = 0; i < grenadeCount; i += 1) {
     const p = pickPoint(i + currentLevel * 3 + 5);
     pickups.push(createPickupModel("grenade", i, p.x, p.y, 1));
+  }
+
+  for (let i = 0; i < flameCount; i += 1) {
+    const p = pickPoint(i + currentLevel * 5 + 7);
+    pickups.push(createPickupModel("flame", i, p.x, p.y, 120));
   }
 }
 
@@ -1397,13 +1640,53 @@ function findEnemyByMesh(mesh: AbstractMesh): EnemyEntity | undefined {
   return undefined;
 }
 
+function applyFlamethrowerDamage(): void {
+  const from = camera.position.add(new Vector3(0, -0.18, 0));
+  const forward = camera.getDirection(new Vector3(0, 0.02, 1)).normalize();
+  const maxDistance = 6.2;
+  const coneCos = Math.cos(0.46);
+
+  for (const enemy of enemies) {
+    if (enemy.health <= 0) continue;
+    const toEnemy = enemy.mesh.position.add(new Vector3(0, 0.42, 0)).subtract(from);
+    const dist = toEnemy.length();
+    if (dist > maxDistance || dist < 0.001) continue;
+    const dir = toEnemy.scale(1 / dist);
+    const facing = Vector3.Dot(forward, dir);
+    if (facing < coneCos) continue;
+    if (!lineOfSight(from, enemy.mesh.position.add(new Vector3(0, 0.42, 0)))) continue;
+    const dmg = 0.45 + (1 - dist / maxDistance) * 0.9;
+    damageEnemy(enemy, dmg);
+  }
+}
+
 function fireWeapon(): void {
   if (gameOver || victory) return;
 
   let damage = 1;
   let splash = 0;
 
-  if (weaponMode === "cannon") {
+  if (weaponMode === "flamethrower") {
+    if (flameFuel <= 0) {
+      weaponMode = hasCannon ? "cannon" : hasMinigun ? "minigun" : "gun";
+      updateHud();
+      stopFlameStream();
+      return;
+    }
+    flameFuel = Math.max(0, flameFuel - 2.1);
+    fireCooldown = 0.04;
+    recoil = 0.02;
+    playFlamethrowerSound();
+    applyFlamethrowerDamage();
+    updateFlameStreamVisual(true);
+    if (flameFuel <= 0.001) {
+      flameFuel = 0;
+      weaponMode = hasCannon ? "cannon" : hasMinigun ? "minigun" : "gun";
+      updateFlameStreamVisual(false);
+    }
+    updateHud();
+    return;
+  } else if (weaponMode === "cannon") {
     if (ammo < 2) return;
     ammo -= 2;
     fireCooldown = 0.58;
@@ -2293,8 +2576,12 @@ function updatePickups(dt: number): void {
       health = Math.min(maxHealth, health + p.amount);
     } else if (p.kind === "ammo") {
       ammo = Math.min(220, ammo + p.amount);
-    } else {
+    } else if (p.kind === "grenade") {
       grenades = Math.min(3, grenades + p.amount);
+    } else {
+      hasFlamethrower = true;
+      flameFuel = Math.min(FLAMETHROWER_MAX_FUEL, flameFuel + p.amount);
+      if (weaponMode !== "flamethrower") weaponMode = "flamethrower";
     }
 
     playPickupSound();
@@ -2400,6 +2687,8 @@ function updatePlayer(dt: number): void {
 
   if (fireCooldown > 0) fireCooldown -= dt;
   if (grenadeCooldown > 0) grenadeCooldown -= dt;
+  const flameActive = weaponMode === "flamethrower" && input.MouseLeft && !cheatOpen && flameFuel > 0;
+  updateFlameStreamVisual(flameActive);
   if (input.MouseLeft && !cheatOpen && fireCooldown <= 0) fireWeapon();
 
   recoil = Math.max(0, recoil - dt * 0.75);
@@ -2433,8 +2722,10 @@ function toggleWeapon(): void {
   const modes: WeaponMode[] = ["gun"];
   if (hasCannon) modes.push("cannon");
   if (hasMinigun) modes.push("minigun");
+  if (hasFlamethrower && flameFuel > 0) modes.push("flamethrower");
   const index = modes.indexOf(weaponMode);
   weaponMode = modes[(index + 1) % modes.length];
+  if (weaponMode !== "flamethrower") stopFlameStream();
   updateHud();
 }
 
@@ -2458,7 +2749,7 @@ function runCheat(raw: string): void {
   }
 
   if (cheat === "help" || cheat === "/help") {
-    setCheatStatus("meow | furball | catnip | zoomies | hiss | nap# | resetcheats");
+    setCheatStatus("meow | burn | furball | catnip | zoomies | hiss | nap# | resetcheats");
     addCheatHistory("/help", "listed cheats");
     return;
   }
@@ -2469,6 +2760,16 @@ function runCheat(raw: string): void {
     ammo = Math.min(240, ammo + 100);
     setCheatStatus("Minigun unlocked");
     addCheatHistory("meow", "minigun");
+    updateHud();
+    return;
+  }
+
+  if (cheat === "burn") {
+    hasFlamethrower = true;
+    flameFuel = FLAMETHROWER_MAX_FUEL;
+    weaponMode = "flamethrower";
+    setCheatStatus("Flamethrower unlocked");
+    addCheatHistory("burn", "flamethrower");
     updateHud();
     return;
   }
@@ -2556,6 +2857,22 @@ function handleInputBindings(): void {
     if (e.code === "Tab") {
       e.preventDefault();
       toggleCheatConsole();
+      return;
+    }
+
+    const fnCheatMap: Record<string, string> = {
+      F1: "meow",
+      F2: "catnip",
+      F3: "zoomies",
+      F4: "furball",
+      F5: "hiss",
+      F6: "resetcheats",
+      F12: "burn",
+    };
+    const cheatFromFn = fnCheatMap[e.code];
+    if (cheatFromFn) {
+      e.preventDefault();
+      runCheat(cheatFromFn);
       return;
     }
 

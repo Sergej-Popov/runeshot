@@ -137,3 +137,8 @@ export function playGrenadeExplodeSound(): void {
   playTone({ startFreq: 1700, endFreq: 120, duration: 0.2, gain: 0.09, noise: true });
   playTone({ type: "triangle", startFreq: 260, endFreq: 90, duration: 0.18, gain: 0.06 });
 }
+
+export function playFlamethrowerSound(): void {
+  playTone({ type: "sawtooth", startFreq: 210, endFreq: 160, duration: 0.09, gain: 0.045 });
+  playTone({ startFreq: 1200, endFreq: 340, duration: 0.08, gain: 0.035, noise: true });
+}
