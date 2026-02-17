@@ -83,6 +83,11 @@ type EnemyEntity = {
   bulletSpeed: number;
   rangedDamage: number;
   spawnCooldown: number;
+  aiMode: "push" | "strafe" | "flank" | "retreat" | "hide" | "roam";
+  aiTimer: number;
+  aiTarget: Vector3 | null;
+  lastSeenPlayer: Vector3 | null;
+  strafeDir: 1 | -1;
 };
 
 type EnemyShot = {
@@ -778,6 +783,11 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
         bulletSpeed: 13.5,
         rangedDamage: 20,
         spawnCooldown: 3.8,
+        aiMode: "push",
+        aiTimer: 0.4 + Math.random() * 0.8,
+        aiTarget: null,
+        lastSeenPlayer: null,
+        strafeDir: Math.random() < 0.5 ? -1 : 1,
       };
     }
 
@@ -795,6 +805,11 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
         bulletSpeed: 0,
         rangedDamage: 0,
         spawnCooldown: 999,
+        aiMode: "push",
+        aiTimer: 0.4,
+        aiTarget: null,
+        lastSeenPlayer: null,
+        strafeDir: Math.random() < 0.5 ? -1 : 1,
       };
     }
 
@@ -812,6 +827,11 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
       bulletSpeed: Math.max(8.5, 11.6 - (currentLevel === 3 ? 1.6 : 0)),
       rangedDamage: 8 + currentLevel * 2,
       spawnCooldown: 999,
+      aiMode: "push",
+      aiTimer: 0.45 + Math.random() * 0.9,
+      aiTarget: null,
+      lastSeenPlayer: null,
+      strafeDir: Math.random() < 0.5 ? -1 : 1,
     };
   }
 
@@ -905,6 +925,11 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
       bulletSpeed: 13.5,
       rangedDamage: 20,
       spawnCooldown: 3.8,
+      aiMode: "push",
+      aiTimer: 0.4 + Math.random() * 0.8,
+      aiTarget: null,
+      lastSeenPlayer: null,
+      strafeDir: Math.random() < 0.5 ? -1 : 1,
     };
   }
 
@@ -922,6 +947,11 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
       bulletSpeed: 0,
       rangedDamage: 0,
       spawnCooldown: 999,
+      aiMode: "push",
+      aiTimer: 0.4,
+      aiTarget: null,
+      lastSeenPlayer: null,
+      strafeDir: Math.random() < 0.5 ? -1 : 1,
     };
   }
 
@@ -939,20 +969,40 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
     bulletSpeed: Math.max(8.5, 11.6 - (currentLevel === 3 ? 1.6 : 0)),
     rangedDamage: 8 + currentLevel * 2,
     spawnCooldown: 999,
+    aiMode: "push",
+    aiTimer: 0.45 + Math.random() * 0.9,
+    aiTarget: null,
+    lastSeenPlayer: null,
+    strafeDir: Math.random() < 0.5 ? -1 : 1,
   };
 }
 
 function spawnEnemiesForLevel(): void {
   const config = LEVELS[currentLevel];
+  const levelSpawn = LEVELS[currentLevel].playerSpawn;
+  const playerSpawnWorld = mapToWorld(levelSpawn.x, levelSpawn.y);
+  const minSpawnDistance = 6.2;
   if (config.bossFight) {
-    enemies.push(createEnemy("boss", 11.5, 8.0));
+    const boss = createEnemy("boss", 11.5, 8.0);
+    resolveEnemySpawnPosition(boss, 11.5, 8.0, playerSpawnWorld, minSpawnDistance);
+    enemies.push(boss);
     return;
   }
 
   const count = enemyCountForLevel(currentLevel);
-  for (let i = 0; i < count; i += 1) {
-    const pick = SPAWN_POINTS[(i + currentLevel * 3) % SPAWN_POINTS.length];
-    if (!isWallAt(pick.x, pick.y)) enemies.push(createEnemy("normal", pick.x, pick.y));
+  let created = 0;
+  for (let attempt = 0; attempt < SPAWN_POINTS.length * 5 && created < count; attempt += 1) {
+    const pick = SPAWN_POINTS[(attempt + currentLevel * 3) % SPAWN_POINTS.length];
+    if (isWallAt(pick.x, pick.y)) continue;
+    if (Vector3.Distance(mapToWorld(pick.x, pick.y), playerSpawnWorld) < minSpawnDistance) continue;
+    const enemy = createEnemy("normal", pick.x, pick.y);
+    resolveEnemySpawnPosition(enemy, pick.x, pick.y, playerSpawnWorld, minSpawnDistance);
+    if (Vector3.Distance(enemy.mesh.position, playerSpawnWorld) < minSpawnDistance) {
+      enemy.mesh.dispose();
+      continue;
+    }
+    enemies.push(enemy);
+    created += 1;
   }
 }
 
@@ -1143,12 +1193,32 @@ function spawnPickupsForLevel(): void {
 }
 
 function resetPlayerAtSpawn(mx: number, my: number): void {
-  const world = mapToWorld(mx, my);
-  const floor = floorHeightAtMap(mx, my);
+  let sx = mx;
+  let sy = my;
+
+  if (!canOccupyMap(sx, sy, PLAYER_RADIUS)) {
+    let found = false;
+    for (let radius = 0.35; radius <= 4.2 && !found; radius += 0.3) {
+      const steps = Math.max(12, Math.floor(12 + radius * 10));
+      for (let i = 0; i < steps; i += 1) {
+        const a = (i / steps) * Math.PI * 2;
+        const cx = mx + Math.sin(a) * radius;
+        const cy = my + Math.cos(a) * radius;
+        if (!canOccupyMap(cx, cy, PLAYER_RADIUS)) continue;
+        sx = cx;
+        sy = cy;
+        found = true;
+        break;
+      }
+    }
+  }
+
+  const world = mapToWorld(sx, sy);
+  const floor = floorHeightAtMap(sx, sy);
   camera.position = new Vector3(world.x, floor + EYE_HEIGHT, world.z);
   verticalVelocity = 0;
   isGrounded = true;
-  safeSpawn = { x: mx, y: my };
+  safeSpawn = { x: sx, y: sy };
 }
 
 function startLevel(levelIndex: number, freshRun = false): void {
@@ -1519,12 +1589,198 @@ function spawnKittenNearBoss(boss: EnemyEntity): void {
 
   for (const off of offsets) {
     const world = boss.mesh.position.add(off);
+    if (Vector3.Distance(world, camera.position) < 2.8) continue;
     const m = worldToMap(world);
     if (!canOccupyMap(m.x, m.y, 0.2)) continue;
     enemies.push(createEnemy("kitten", m.x, m.y));
     playCatMeowSound();
     return;
   }
+}
+
+function enemyRadius(enemy: EnemyEntity): number {
+  if (enemy.type === "boss") return 0.52;
+  if (enemy.type === "kitten") return 0.2;
+  return 0.22;
+}
+
+function resolveEnemySpawnPosition(
+  enemy: EnemyEntity,
+  mx: number,
+  my: number,
+  avoidPos?: Vector3,
+  minDistanceFromAvoid = 0,
+): void {
+  const r = enemyRadius(enemy);
+  const isFarEnough = (x: number, y: number): boolean => {
+    if (!avoidPos || minDistanceFromAvoid <= 0) return true;
+    const w = mapToWorld(x, y);
+    return Vector3.Distance(w, avoidPos) >= minDistanceFromAvoid;
+  };
+  if (canOccupyMap(mx, my, r) && isFarEnough(mx, my)) {
+    const w = mapToWorld(mx, my);
+    enemy.mesh.position.x = w.x;
+    enemy.mesh.position.z = w.z;
+    return;
+  }
+
+  for (let radius = 0.45; radius <= 4.2; radius += 0.35) {
+    const steps = Math.max(10, Math.floor(10 + radius * 8));
+    for (let i = 0; i < steps; i += 1) {
+      const a = (i / steps) * Math.PI * 2;
+      const cx = mx + Math.sin(a) * radius;
+      const cy = my + Math.cos(a) * radius;
+      if (!canOccupyMap(cx, cy, r)) continue;
+      if (!isFarEnough(cx, cy)) continue;
+      const w = mapToWorld(cx, cy);
+      enemy.mesh.position.x = w.x;
+      enemy.mesh.position.z = w.z;
+      return;
+    }
+  }
+}
+
+function normalizeAngle(a: number): number {
+  let out = a;
+  while (out > Math.PI) out -= Math.PI * 2;
+  while (out < -Math.PI) out += Math.PI * 2;
+  return out;
+}
+
+function rotateEnemyToward(enemy: EnemyEntity, dir: Vector3, dt: number, speed = 6.4): void {
+  if (dir.lengthSquared() < 0.0001) return;
+  const desired = Math.atan2(dir.x, dir.z);
+  const delta = normalizeAngle(desired - enemy.mesh.rotation.y);
+  enemy.mesh.rotation.y += Math.max(-speed * dt, Math.min(speed * dt, delta));
+}
+
+function tryMoveEnemy(enemy: EnemyEntity, moveDir: Vector3, amount: number): boolean {
+  if (moveDir.lengthSquared() < 0.0001 || amount <= 0) return false;
+  const dir = moveDir.normalize();
+  const prev = enemy.mesh.position.clone();
+  let moved = false;
+
+  const candX = prev.add(new Vector3(dir.x * amount, 0, 0));
+  const mapX = worldToMap(candX);
+  if (canOccupyMap(mapX.x, mapX.y, enemyRadius(enemy))) {
+    enemy.mesh.position.x = candX.x;
+    moved = true;
+  }
+
+  const candZ = prev.add(new Vector3(0, 0, dir.z * amount));
+  const mapZ = worldToMap(candZ);
+  if (canOccupyMap(mapZ.x, mapZ.y, enemyRadius(enemy))) {
+    enemy.mesh.position.z = candZ.z;
+    moved = true;
+  }
+
+  return moved;
+}
+
+function pickRoamTarget(enemy: EnemyEntity): Vector3 | null {
+  const base = enemy.mesh.position;
+  for (let i = 0; i < 12; i += 1) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 1.8 + Math.random() * 4.6;
+    const p = new Vector3(base.x + Math.sin(a) * r, 0, base.z + Math.cos(a) * r);
+    const m = worldToMap(p);
+    if (canOccupyMap(m.x, m.y, enemyRadius(enemy))) return mapToWorld(m.x, m.y, base.y);
+  }
+  return null;
+}
+
+function pickCoverTarget(enemy: EnemyEntity, playerPos: Vector3): Vector3 | null {
+  const base = enemy.mesh.position;
+  for (let i = 0; i < 20; i += 1) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 2.2 + Math.random() * 5.2;
+    const p = new Vector3(base.x + Math.sin(a) * r, 0, base.z + Math.cos(a) * r);
+    const m = worldToMap(p);
+    if (!canOccupyMap(m.x, m.y, enemyRadius(enemy))) continue;
+    const w = mapToWorld(m.x, m.y, base.y);
+    const hidden = !lineOfSight(w.add(new Vector3(0, 0.8, 0)), playerPos.add(new Vector3(0, -0.2, 0)));
+    if (hidden) return w;
+  }
+  return null;
+}
+
+function pickFlankTarget(enemy: EnemyEntity, playerPos: Vector3): Vector3 | null {
+  const fromPlayer = enemy.mesh.position.subtract(playerPos);
+  fromPlayer.y = 0;
+  if (fromPlayer.lengthSquared() < 0.0001) fromPlayer.set(1, 0, 0);
+  fromPlayer.normalize();
+  const side = new Vector3(fromPlayer.z, 0, -fromPlayer.x).scale(enemy.strafeDir);
+  for (let i = 0; i < 6; i += 1) {
+    const dist = 3.2 + i * 0.75;
+    const cand = playerPos.add(side.scale(dist)).add(fromPlayer.scale(1.2 + i * 0.25));
+    const m = worldToMap(cand);
+    if (!canOccupyMap(m.x, m.y, enemyRadius(enemy))) continue;
+    return mapToWorld(m.x, m.y, enemy.mesh.position.y);
+  }
+  return null;
+}
+
+function retargetEnemyAi(enemy: EnemyEntity, playerPos: Vector3, canSee: boolean, dist: number): void {
+  if (enemy.type === "kitten") {
+    enemy.aiMode = dist < 1.6 ? "strafe" : "push";
+    enemy.aiTimer = 0.35 + Math.random() * 0.35;
+    enemy.aiTarget = null;
+    if (enemy.aiMode === "strafe") enemy.strafeDir = Math.random() < 0.5 ? -1 : 1;
+    return;
+  }
+
+  if (canSee) enemy.lastSeenPlayer = playerPos.clone();
+
+  const lowHealth = enemy.health <= Math.max(2, enemy.maxHealth * 0.35);
+  if (lowHealth && Math.random() < 0.75) {
+    enemy.aiMode = "retreat";
+    enemy.aiTimer = 0.9 + Math.random() * 1.1;
+    enemy.aiTarget = null;
+    return;
+  }
+
+  if (canSee) {
+    if (dist < 2.2) {
+      enemy.aiMode = "retreat";
+      enemy.aiTimer = 0.6 + Math.random() * 0.8;
+      enemy.aiTarget = null;
+      return;
+    }
+
+    const roll = Math.random();
+    if (roll < 0.38) {
+      enemy.aiMode = "strafe";
+      enemy.aiTimer = 0.8 + Math.random() * 1.15;
+      enemy.strafeDir = Math.random() < 0.5 ? -1 : 1;
+      enemy.aiTarget = null;
+      return;
+    }
+
+    if (roll < 0.68) {
+      enemy.aiMode = "flank";
+      enemy.aiTimer = 1.1 + Math.random() * 1.2;
+      enemy.aiTarget = pickFlankTarget(enemy, playerPos) ?? pickRoamTarget(enemy);
+      return;
+    }
+
+    enemy.aiMode = "hide";
+    enemy.aiTimer = 1.2 + Math.random() * 1.6;
+    enemy.aiTarget = pickCoverTarget(enemy, playerPos) ?? pickFlankTarget(enemy, playerPos) ?? pickRoamTarget(enemy);
+    return;
+  }
+
+  if (enemy.lastSeenPlayer) {
+    enemy.aiMode = Math.random() < 0.55 ? "flank" : "hide";
+    enemy.aiTimer = 1.0 + Math.random() * 1.2;
+    enemy.aiTarget =
+      (enemy.aiMode === "hide" ? pickCoverTarget(enemy, enemy.lastSeenPlayer) : pickFlankTarget(enemy, enemy.lastSeenPlayer)) ??
+      pickRoamTarget(enemy);
+    return;
+  }
+
+  enemy.aiMode = "roam";
+  enemy.aiTimer = 1.1 + Math.random() * 1.8;
+  enemy.aiTarget = pickRoamTarget(enemy);
 }
 
 function updateEnemies(dt: number): void {
@@ -1536,19 +1792,44 @@ function updateEnemies(dt: number): void {
     const toPlayer = playerPos.subtract(enemy.mesh.position);
     toPlayer.y = 0;
     const dist = Math.max(0.0001, toPlayer.length());
-    const dir = toPlayer.scale(1 / dist);
+    const dirToPlayer = toPlayer.scale(1 / dist);
+    const canSee = lineOfSight(enemy.mesh.position.add(new Vector3(0, 0.8, 0)), playerPos.add(new Vector3(0, -0.2, 0)));
 
-    const moveDist = enemy.speed * dt;
-    if (dist > (enemy.type === "kitten" ? 0.9 : 1.4)) {
-      const candidate = enemy.mesh.position.add(dir.scale(moveDist));
-      const map = worldToMap(candidate);
-      if (canOccupyMap(map.x, map.y, enemy.type === "boss" ? 0.4 : 0.22)) {
-        enemy.mesh.position.x = candidate.x;
-        enemy.mesh.position.z = candidate.z;
+    enemy.aiTimer -= dt;
+    if (enemy.aiTimer <= 0 || (enemy.aiTarget && Vector3.Distance(enemy.mesh.position, enemy.aiTarget) < 0.65)) {
+      retargetEnemyAi(enemy, playerPos, canSee, dist);
+    }
+
+    let moveDir = new Vector3(0, 0, 0);
+    const desiredMinDist = enemy.type === "boss" ? 2.3 : enemy.type === "kitten" ? 0.8 : 2.0;
+    const desiredMaxDist = enemy.type === "boss" ? 8.5 : enemy.type === "kitten" ? 1.6 : 10.0;
+
+    if (enemy.aiMode === "push") {
+      if (dist > desiredMinDist) moveDir = dirToPlayer;
+    } else if (enemy.aiMode === "retreat") {
+      if (dist < desiredMaxDist) moveDir = dirToPlayer.scale(-1);
+    } else if (enemy.aiMode === "strafe") {
+      const side = new Vector3(dirToPlayer.z, 0, -dirToPlayer.x).scale(enemy.strafeDir);
+      let keep = new Vector3(0, 0, 0);
+      if (dist > desiredMaxDist) keep = dirToPlayer.scale(0.45);
+      else if (dist < desiredMinDist) keep = dirToPlayer.scale(-0.45);
+      moveDir = side.add(keep);
+    } else {
+      const target = enemy.aiTarget;
+      if (target) {
+        moveDir = target.subtract(enemy.mesh.position);
+        moveDir.y = 0;
       }
     }
 
-    enemy.mesh.lookAt(new Vector3(playerPos.x, enemy.mesh.position.y, playerPos.z));
+    const moveScale =
+      enemy.aiMode === "retreat" ? 1.15 :
+      enemy.aiMode === "flank" ? 1.08 :
+      enemy.aiMode === "hide" ? 0.9 :
+      enemy.aiMode === "roam" ? 0.75 : 1.0;
+    const moved = tryMoveEnemy(enemy, moveDir, enemy.speed * moveScale * dt);
+
+    if (!moved && enemy.aiMode !== "push" && enemy.type !== "kitten") enemy.aiTimer = 0;
 
     enemy.meleeCooldown -= dt;
     const meleeRange = enemy.type === "boss" ? 1.6 : enemy.type === "kitten" ? 1.0 : 1.2;
@@ -1559,11 +1840,18 @@ function updateEnemies(dt: number): void {
 
     enemy.shootCooldown -= dt;
     if (enemy.bulletSpeed > 0 && dist < 22 && enemy.shootCooldown <= 0) {
-      const canSee = lineOfSight(enemy.mesh.position.add(new Vector3(0, 0.8, 0)), playerPos.add(new Vector3(0, -0.2, 0)));
       if (canSee) {
+        rotateEnemyToward(enemy, dirToPlayer, dt, 18);
         spawnEnemyShot(enemy);
-        enemy.shootCooldown = enemy.shootDelay;
+        const sneakBonus = enemy.aiMode === "hide" ? 0.82 : enemy.aiMode === "flank" ? 0.9 : 1;
+        enemy.shootCooldown = enemy.shootDelay * sneakBonus * (0.92 + Math.random() * 0.18);
       }
+    }
+
+    if (canSee && enemy.aiMode !== "hide" && enemy.aiMode !== "roam") {
+      rotateEnemyToward(enemy, dirToPlayer, dt, 4.8);
+    } else if (moveDir.lengthSquared() > 0.0008) {
+      rotateEnemyToward(enemy, moveDir, dt, 5.8);
     }
 
     if (enemy.type === "boss") {
