@@ -82,9 +82,107 @@ body {
   transition: width 120ms linear;
 }
 
+.boss-hud {
+  display: grid;
+  gap: 5px;
+  width: min(340px, 70vw);
+  background: #2a1717d0;
+  border: 1px solid #9a3d3d;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-weight: 700;
+}
+
+.boss-track {
+  width: 100%;
+  height: 12px;
+  border-radius: 8px;
+  border: 1px solid #8f3a3a;
+  background: #321f1f;
+  overflow: hidden;
+}
+
+.boss-bar {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, #f45a5a, #b51e1e);
+  transition: width 100ms linear;
+}
+
+.hidden {
+  display: none;
+}
+
 .help {
   font-size: 0.9rem;
   text-shadow: 0 0 8px #000;
+}
+
+.cheat-badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cheat-badge {
+  background: #243047dd;
+  border: 1px solid #5c78ad;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #d8e6ff;
+}
+
+.cheat-console {
+  position: fixed;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  z-index: 5;
+  width: min(560px, 90vw);
+  background: #101218e8;
+  border: 1px solid #3f4a63;
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 10px 35px #000000a0;
+}
+
+.cheat-title {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: #b2d0ff;
+  margin-bottom: 6px;
+}
+
+.cheat-status {
+  color: #d9e4ff;
+  font-size: 0.9rem;
+  margin-bottom: 8px;
+}
+
+.cheat-history {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 8px;
+  color: #aac0ec;
+  font-size: 0.85rem;
+  min-height: 52px;
+}
+
+.cheat-input {
+  width: 100%;
+  border: 1px solid #596789;
+  border-radius: 8px;
+  background: #0b0f17;
+  color: #e9f0ff;
+  padding: 9px 10px;
+  font: inherit;
+  outline: none;
+}
+
+.cheat-input:focus {
+  border-color: #93b6ff;
 }
 
 #game {

@@ -16,12 +16,28 @@
           <div id="healthBar" class="health-bar"></div>
         </div>
       </div>
+      <span id="level">Level: 1</span>
       <span id="ammo">Ammo: 24</span>
+      <span id="weapon">Weapon: Gun</span>
       <span id="enemy">Cat Fiends: 0/0</span>
     </div>
-    <div class="help">
-      Move: WASD | Turn: Mouse / Arrow Keys | Shoot: Click / Space | Restart: R
+    <div id="bossHud" class="boss-hud hidden">
+      <span id="bossText">Boss HP: 0/0</span>
+      <div class="boss-track">
+        <div id="bossBar" class="boss-bar"></div>
+      </div>
     </div>
+    <div class="help">
+      Move: WASD | Turn: Mouse / Arrow Keys | Jump: Space | Shoot: Hold Left Click | Switch Weapon: E | Minimap Size: N | Cheats: Tab | Level 4: Jump Platforms | Music: M | Restart: R
+    </div>
+    <div id="cheatBadges" class="cheat-badges hidden"></div>
+  </div>
+
+  <div id="cheatConsole" class="cheat-console hidden">
+    <div class="cheat-title">Cat Console</div>
+    <div id="cheatStatus" class="cheat-status">Type a cheat and press Enter</div>
+    <div id="cheatHistory" class="cheat-history"></div>
+    <input id="cheatInput" class="cheat-input" type="text" autocomplete="off" spellcheck="false" placeholder="/help / meow / furball / catnip / zoomies / hiss / resetcheats">
   </div>
 
   <canvas id="game" width="960" height="540"></canvas>
