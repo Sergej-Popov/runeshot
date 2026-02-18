@@ -1,20 +1,22 @@
 {
-  "name": "doom-with-cats",
-  "version": "1.0.0",
+  "name": "runeshot",
   "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "client",
+    "server"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "dev": "concurrently -n server,client -c cyan,green \"npm run dev -w server\" \"npm run dev -w client\"",
+    "dev:server": "npm run dev -w server",
+    "dev:client": "npm run dev -w client",
+    "deploy": "bash ./deploy.sh",
+    "build:server:watch": "npm run build:watch -w server",
+    "build": "npm run build -w server && npm run build -w client",
+    "typecheck": "npm run typecheck -w server && npm run typecheck -w client",
+    "test": "npm run test -w server && npm run test -w client"
   },
   "devDependencies": {
-    "@babylonjs/core": "^7.42.0",
-    "@babylonjs/loaders": "^7.42.0",
-    "typescript": "^5.7.3",
-    "vite": "^6.2.0",
-    "vitest": "^3.0.5"
+    "concurrently": "^9.1.2"
   }
 }

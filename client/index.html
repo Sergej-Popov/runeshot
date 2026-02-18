@@ -55,10 +55,21 @@
     </div>
   </div>
 
+  <div id="serverDebug" class="server-debug">
+    <div class="server-debug-title">Server Debug</div>
+    <div id="serverDebugState">State: Booting</div>
+    <div id="serverDebugAuth">Auth: No session</div>
+    <div id="serverDebugLobby">Lobby: n/a</div>
+    <div id="serverDebugRoom">Room: n/a</div>
+    <div id="serverDebugPlayers">Players: 0</div>
+    <div id="serverDebugUrl">URL: n/a</div>
+  </div>
+
   <canvas id="game" width="960" height="540"></canvas>
   <div class="crosshair" aria-hidden="true"></div>
   <canvas id="minimap" class="minimap" width="190" height="190"></canvas>
 
+  <script src="/runtime-config.js"></script>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

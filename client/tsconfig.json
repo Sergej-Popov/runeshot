@@ -8,7 +8,8 @@
     "noImplicitAny": false,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "types": ["vite/client"]
   },
   "include": ["src/**/*.ts"]
 }

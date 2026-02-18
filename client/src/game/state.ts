@@ -34,7 +34,7 @@ export const LEVELS: LevelConfig[] = [
   { playerSpawn: { x: 13.2, y: 2.2 }, portal: { x: 2.5, y: 13.5 }, enemyCount: 10 },
   { playerSpawn: { x: 2.6, y: 8.0 }, portal: { x: 13.5, y: 8.5 }, enemyCount: 10 },
   { playerSpawn: { x: 2.4, y: 8.0 }, portal: { x: 13.5, y: 8.5 }, enemyCount: 1, bossFight: true },
-  { playerSpawn: { x: 12.8, y: 8.0 }, portal: { x: 2.5, y: 8.5 }, enemyCount: 14 },
+  { playerSpawn: { x: 10.8, y: 9.4 }, portal: { x: 2.5, y: 8.5 }, enemyCount: 14 },
   { playerSpawn: { x: 8.0, y: 13.2 }, portal: { x: 8.0, y: 2.4 }, enemyCount: 16 },
 ];
 

@@ -1,0 +1,25 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    container_name: runeshot-server
+    environment:
+      PORT: "2567"
+      NODE_ENV: production
+    ports:
+      - "2567:2567"
+    restart: unless-stopped
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: runeshot-client
+    environment:
+      RUNESHOT_SERVER_URL: ""
+    ports:
+      - "8080:80"
+    depends_on:
+      - server
+    restart: unless-stopped

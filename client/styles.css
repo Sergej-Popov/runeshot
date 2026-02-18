@@ -295,3 +295,29 @@ body {
   background: linear-gradient(90deg, #67d28c, #ffd16a, #ff7f3d);
   transition: width 40ms linear;
 }
+
+.server-debug {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 6;
+  min-width: 280px;
+  max-width: min(92vw, 560px);
+  background: #0b1118d9;
+  border: 1px solid #3a5a7a;
+  border-radius: 10px;
+  padding: 8px 10px;
+  box-shadow: 0 10px 26px #00000090;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  color: #cde4ff;
+  pointer-events: none;
+}
+
+.server-debug-title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #82c5ff;
+  margin-bottom: 4px;
+}

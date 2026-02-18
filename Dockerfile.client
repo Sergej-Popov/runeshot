@@ -1,0 +1,22 @@
+FROM node:24-alpine AS deps
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+COPY client/package.json ./client/package.json
+
+RUN npm ci --workspace client
+
+FROM deps AS build
+COPY client ./client
+
+RUN npm run build -w client
+
+FROM nginx:1.27-alpine AS runtime
+
+COPY --from=build /app/client/dist /usr/share/nginx/html
+COPY docker/client/default.conf /etc/nginx/conf.d/default.conf
+COPY docker/client/40-runeshot-runtime-config.sh /docker-entrypoint.d/40-runeshot-runtime-config.sh
+
+RUN chmod +x /docker-entrypoint.d/40-runeshot-runtime-config.sh
+
+EXPOSE 80

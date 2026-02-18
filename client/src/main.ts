@@ -44,6 +44,12 @@ import {
   levelEl,
   minimapCtx,
   minimapEl,
+  serverDebugAuthEl,
+  serverDebugLobbyEl,
+  serverDebugPlayersEl,
+  serverDebugRoomEl,
+  serverDebugStateEl,
+  serverDebugUrlEl,
   smokeGrenadesEl,
   staminaBarEl,
   staminaTextEl,
@@ -74,6 +80,7 @@ import {
   isTrampolineForLevel,
   parseNapCheat,
 } from "./game/state";
+import { LegacyMultiplayerSync } from "./multiplayer/legacySync";
 
 type WeaponMode = "gun" | "cannon" | "minigun" | "flamethrower";
 type EnemyType = "normal" | "boss" | "kitten";
@@ -469,6 +476,9 @@ let minimapSizeIndex = 1;
 let stamina = MAX_STAMINA;
 let sprintExhausted = false;
 const cheatHistory: string[] = [];
+let multiplayerSync: LegacyMultiplayerSync | null = null;
+let multiplayerRespawnSeconds = 0;
+let multiplayerWasDowned = false;
 
 function tryAcquirePointerLock(): void {
   if (cheatOpen) return;
@@ -552,7 +562,9 @@ function updateHud(): void {
   const staminaPct = Math.max(0, Math.min(100, (stamina / MAX_STAMINA) * 100));
   staminaTextEl.textContent = `Stamina: ${Math.round(staminaPct)}%`;
   staminaBarEl.style.width = `${staminaPct}%`;
-  levelEl.textContent = `Level: ${currentLevel + 1}/${LEVELS.length}`;
+  levelEl.textContent = multiplayerRespawnSeconds > 0
+    ? `Respawn: ${multiplayerRespawnSeconds}s`
+    : `Level: ${currentLevel + 1}/${LEVELS.length}`;
   ammoEl.textContent = `Ammo: ${ammo}`;
   grenadesEl.textContent = `Grenades: ${grenades}/3`;
   smokeGrenadesEl.textContent = `Smoke: ${smokeGrenades}/2`;
@@ -562,7 +574,15 @@ function updateHud(): void {
   weaponEl.textContent = `Weapon: ${weaponName}`;
 
   const alive = enemies.filter((e) => e.health > 0).length;
-  enemyEl.textContent = portalActive ? "Portal: Enter!" : `Cat Fiends: ${alive}/${enemies.length}`;
+  if (multiplayerSync) {
+    if (multiplayerRespawnSeconds > 0) {
+      enemyEl.textContent = `You died. Respawning in ${multiplayerRespawnSeconds}s`;
+    } else {
+      enemyEl.textContent = portalActive ? "Portal: Enter!" : `Server Cats: ${multiplayerSync.getServerCatCount()}`;
+    }
+  } else {
+    enemyEl.textContent = portalActive ? "Portal: Enter!" : `Cat Fiends: ${alive}/${enemies.length}`;
+  }
 
   const boss = enemies.find((e) => e.type === "boss" && e.health > 0);
   bossHudEl.classList.toggle("hidden", !boss);
@@ -637,13 +657,33 @@ function drawMinimap(): void {
     minimapCtx.fill();
   }
 
+  if (multiplayerSync) {
+    const catMarkers = multiplayerSync.getRemoteCatMinimapMarkers();
+    for (const marker of catMarkers) {
+      const mp = worldToMap(new Vector3(marker.x, 0, marker.z));
+      minimapCtx.fillStyle = "#ffd17a";
+      minimapCtx.beginPath();
+      minimapCtx.arc(mp.x * cell, toMiniY(mp.y), Math.max(2.8, cell * 0.24), 0, Math.PI * 2);
+      minimapCtx.fill();
+    }
+
+    const remoteMarkers = multiplayerSync.getRemoteMinimapMarkers();
+    for (const marker of remoteMarkers) {
+      const mp = worldToMap(new Vector3(marker.x, 0, marker.z));
+      minimapCtx.fillStyle = "#ff3b3b";
+      minimapCtx.beginPath();
+      minimapCtx.arc(mp.x * cell, toMiniY(mp.y), Math.max(2.8, cell * 0.24), 0, Math.PI * 2);
+      minimapCtx.fill();
+    }
+  }
+
   const p = worldToMap(camera.position);
-  minimapCtx.fillStyle = "#f5f8ff";
+  minimapCtx.fillStyle = "#22a7ff";
   minimapCtx.beginPath();
   minimapCtx.arc(p.x * cell, toMiniY(p.y), Math.max(3, cell * 0.24), 0, Math.PI * 2);
   minimapCtx.fill();
 
-  minimapCtx.strokeStyle = "#f5f8ff";
+  minimapCtx.strokeStyle = "#22a7ff";
   minimapCtx.lineWidth = 2;
   minimapCtx.beginPath();
   minimapCtx.moveTo(p.x * cell, toMiniY(p.y));
@@ -1191,6 +1231,8 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
 }
 
 function spawnEnemiesForLevel(): void {
+  if (multiplayerSync) return;
+
   const config = LEVELS[currentLevel];
   const levelSpawn = LEVELS[currentLevel].playerSpawn;
   const playerSpawnWorld = mapToWorld(levelSpawn.x, levelSpawn.y);
@@ -1481,6 +1523,8 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
 }
 
 function spawnPickupsForLevel(): void {
+  if (multiplayerSync) return;
+
   const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
   const ammoCount = 4;
   const grenadeCount = 1 + Math.floor(currentLevel / 3);
@@ -1599,6 +1643,10 @@ function damagePlayer(amount: number): void {
 }
 
 function setPortalActive(active: boolean): void {
+  if (portalActive === active) {
+    if (portalMesh) portalMesh.isVisible = active;
+    return;
+  }
   portalActive = active;
   if (portalMesh) portalMesh.isVisible = active;
   if (active) playPortalSound();
@@ -1662,6 +1710,22 @@ function applyFlamethrowerDamage(): void {
 
 function fireWeapon(): void {
   if (gameOver || victory) return;
+
+  if (multiplayerSync) {
+    if (ammo < 1) return;
+    ammo -= 1;
+    fireCooldown = 0.22;
+    recoil = 0.1;
+    playGunSound();
+    const aimDir = camera.getDirection(new Vector3(0, 0, 1)).normalize();
+    multiplayerSync.sendShoot({
+      dirX: aimDir.x,
+      dirY: aimDir.y,
+      dirZ: aimDir.z,
+    });
+    updateHud();
+    return;
+  }
 
   let damage = 1;
   let splash = 0;
@@ -2707,6 +2771,10 @@ function updatePortal(dt: number): void {
 
     const dist = Vector3.Distance(portalMesh.position, camera.position);
     if (dist < 1.4) {
+      if (multiplayerSync) {
+        multiplayerSync.requestPortalEnter();
+        return;
+      }
       if (currentLevel < LEVELS.length - 1) startLevel(currentLevel + 1, false);
       else {
         victory = true;
@@ -2987,6 +3055,97 @@ function handleInputBindings(): void {
   });
 }
 
+function syncMultiplayerPose(now: number): void {
+  if (!multiplayerSync) return;
+
+  try {
+    multiplayerSync.tick({
+      x: camera.position.x,
+      y: camera.position.y - EYE_HEIGHT + 1,
+      z: camera.position.z,
+      rotY: yaw,
+      hp: Math.max(0, Math.floor(health)),
+      ammo: Math.max(0, Math.floor(ammo)),
+    });
+  } catch (error) {
+    console.error("Multiplayer pose sync failed", error);
+  }
+}
+
+function syncMultiplayerVitals(): void {
+  if (!multiplayerSync) return;
+  const vitals = multiplayerSync.getSelfVitals();
+  const transform = multiplayerSync.getSelfTransform();
+  health = Math.max(0, Math.min(maxHealth, vitals.hp));
+  ammo = Math.max(0, Math.floor(vitals.ammo));
+  multiplayerRespawnSeconds = Math.max(0, Math.ceil(vitals.respawnIn));
+  if (multiplayerRespawnSeconds > 0) {
+    gameOver = true;
+    multiplayerWasDowned = true;
+    setCheatStatus(`You are down. Respawning in ${multiplayerRespawnSeconds}s...`);
+  } else if (gameOver) {
+    if (multiplayerWasDowned) {
+      camera.position.x = transform.x;
+      camera.position.y = transform.y + EYE_HEIGHT - 1;
+      camera.position.z = transform.z;
+      yaw = transform.rotY;
+      pitch = 0;
+      verticalVelocity = 0;
+      isGrounded = true;
+      trampolineLock = false;
+    }
+    multiplayerWasDowned = false;
+    gameOver = false;
+    setCheatStatus("Respawned");
+  }
+}
+
+function syncMultiplayerWorldState(): void {
+  if (!multiplayerSync) return;
+  const world = multiplayerSync.getServerWorldState();
+  const serverLevel = Math.max(0, Math.min(LEVELS.length - 1, Math.floor(world.level)));
+  if (serverLevel !== currentLevel) {
+    startLevel(serverLevel, true);
+    const transform = multiplayerSync.getSelfTransform();
+    camera.position.x = transform.x;
+    camera.position.y = transform.y + EYE_HEIGHT - 1;
+    camera.position.z = transform.z;
+    yaw = transform.rotY;
+    pitch = 0;
+    verticalVelocity = 0;
+    isGrounded = true;
+    trampolineLock = false;
+    safeSpawn = worldToMap(camera.position);
+    setCheatStatus(`Level ${serverLevel + 1}`);
+  }
+  setPortalActive(world.portalActive);
+}
+
+function updateServerDebugPanel(): void {
+  if (!multiplayerSync) {
+    serverDebugStateEl.textContent = "State: Disabled";
+    serverDebugAuthEl.textContent = "Auth: No session";
+    serverDebugLobbyEl.textContent = "Lobby: n/a";
+    serverDebugRoomEl.textContent = "Room: n/a";
+    serverDebugPlayersEl.textContent = "Players: 0";
+    serverDebugUrlEl.textContent = "URL: n/a";
+    return;
+  }
+
+  try {
+    const info = multiplayerSync.getDebugInfo();
+    serverDebugStateEl.textContent = `State: ${info.state}`;
+    serverDebugAuthEl.textContent = `Auth: ${info.auth}`;
+    serverDebugLobbyEl.textContent = `Lobby: ${info.lobby}`;
+    serverDebugRoomEl.textContent = `Room: ${info.room}`;
+    serverDebugPlayersEl.textContent = `Players: ${info.players}`;
+    serverDebugUrlEl.textContent = `URL: ${info.url}`;
+  } catch (error) {
+    serverDebugStateEl.textContent = "State: Debug error";
+    console.error("Server debug panel update failed", error);
+  }
+}
+
 function gameLoop(now: number): void {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
@@ -3002,19 +3161,26 @@ function gameLoop(now: number): void {
     updatePlayer(dt);
   }
 
+  syncMultiplayerWorldState();
+
   if (!gameOver && !victory) {
-    updateEnemies(dt);
-    updateEnemyShots(dt);
+    if (!multiplayerSync) {
+      updateEnemies(dt);
+      updateEnemyShots(dt);
+      updatePickups(dt);
+    }
     updateGrenades(dt);
     updateSmokeClouds(dt);
-    updatePickups(dt);
     updatePortal(dt);
 
-    if (!portalActive && enemies.filter((e) => e.health > 0).length === 0) setPortalActive(true);
+    if (!multiplayerSync && !portalActive && enemies.filter((e) => e.health > 0).length === 0) setPortalActive(true);
   }
 
+  syncMultiplayerVitals();
+  syncMultiplayerPose(now);
   updateHud();
   drawMinimap();
+  updateServerDebugPanel();
   scene.render();
 }
 
@@ -3023,6 +3189,10 @@ async function init(): Promise<void> {
   makeGunModel();
   handleInputBindings();
   await loadEnemyModelTemplate();
+  multiplayerSync = new LegacyMultiplayerSync(scene, (status) => {
+    setCheatStatus(status);
+  });
+  void multiplayerSync.connect();
   startLevel(0, true);
   engine.runRenderLoop(() => gameLoop(performance.now()));
   window.addEventListener("resize", () => engine.resize());
