@@ -1,0 +1,23 @@
+﻿[
+    {
+        "variant":  "v1",
+        "rationale":  "Balanced readability atlas with clean retro RPG silhouettes.",
+        "prompt":  "Pixel-art sprite atlas for a 2D game showing four casted magic spells, each as a 6-frame animation strip.\nSubject: Fireball, lightning strike, ice spike, poison cloud.\nEnvironment: Transparent background, no scene backdrop, atlas-only output.\nStyle: 32x32 per frame, crisp pixel art, SNES-era action RPG readability.\nComposition: Single image atlas arranged as 4 rows x 6 columns; row 1 fireball, row 2 lightning strike, row 3 ice spike, row 4 poison cloud; 1px transparent padding between frames.\nLighting: Emissive spell glow with controlled contrast so silhouettes remain clear.\nColor direction: Fire warm oranges/reds, lightning electric yellow-cyan, ice pale cyan/blue/white, poison toxic green/olive.\nQuality details: No anti-aliasing blur, hard pixel edges, coherent frame-to-frame motion progression from cast start to impact/fade, game-ready atlas spacing.\nAvoid: text, labels, UI, characters, weapons, backgrounds, watercolor, smooth gradients, blurry edges.",
+        "file":  "C:\\dev\\runeshot\\generated\\spells_atlas\\spells_atlas_v1.jpg",
+        "mimeType":  "image/jpeg"
+    },
+    {
+        "variant":  "v2",
+        "rationale":  "Higher-energy VFX style with stronger motion arcs and impact frames.",
+        "prompt":  "Pixel-art sprite atlas for a 2D game with four offensive magic spell animations.\nSubject: Fireball, lightning strike, ice spike, poison cloud.\nEnvironment: Transparent background only.\nStyle: 32x32 pixel frames, arcade-style pixel VFX, bold contrast.\nComposition: One atlas image in a strict 4x6 grid of frames; each row is one spell in order fireball, lightning strike, ice spike, poison cloud; each row animates left-to-right from cast to peak to dissipate.\nLighting: Strong emissive core with subtle outer aura in pixels.\nColor direction: Saturated elemental palettes; fire orange-magenta highlights, lightning yellow-white with cyan fringe, ice blue-white shards, poison green with dark desaturated smoke edges.\nQuality details: Distinct keyframes at frames 1, 3, and 6; consistent frame alignment for easy engine import; clean transparent margins.\nAvoid: text, logos, character art, perspective scene, painterly strokes, soft airbrush, noisy texture.",
+        "file":  "C:\\dev\\runeshot\\generated\\spells_atlas\\spells_atlas_v2.jpg",
+        "mimeType":  "image/jpeg"
+    },
+    {
+        "variant":  "v3",
+        "rationale":  "Dark-fantasy palette variant for moodier spell packs and night maps.",
+        "prompt":  "Create a game-ready pixel sprite atlas of casted spells for a top-down action RPG.\nSubject: Fireball, lightning strike, ice spike, poison cloud as separate animation rows.\nEnvironment: Fully transparent background with only sprite pixels.\nStyle: Handcrafted retro pixel art, 32x32 frame cells, restrained palette, readable at small scale.\nComposition: Atlas layout 4 rows by 6 columns with uniform spacing; row order fireball, lightning strike, ice spike, poison cloud; smooth motion continuity in each strip.\nLighting: Dramatic glow cores with darker outer tones for high readability on bright and dark maps.\nColor direction: Fire ember-red/orange, lightning pale gold with blue sparks, ice cold teal/white, poison murky lime with dark vapor.\nQuality details: Pixel-perfect edges, centered sprites in each cell, no clipping, no stray pixels, export-ready atlas.\nAvoid: text, borders, checkerboards, characters, environment props, modern 3D rendering, blur.",
+        "file":  "C:\\dev\\runeshot\\generated\\spells_atlas\\spells_atlas_v3.jpg",
+        "mimeType":  "image/jpeg"
+    }
+]

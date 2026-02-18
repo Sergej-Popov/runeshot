@@ -1,0 +1,85 @@
+{
+  "source": "C:\\dev\\runeshot\\images\\ptions-sprites.png",
+  "width": 1408,
+  "height": 768,
+  "generatedAt": "2026-02-18T21:53:33.101Z",
+  "settings": {
+    "whiteThreshold": 245,
+    "alphaThreshold": 1,
+    "minArea": 80,
+    "gapTolerance": 1,
+    "limit": 7
+  },
+  "sprites": [
+    {
+      "id": "health",
+      "x": 398,
+      "y": 34,
+      "width": 260,
+      "height": 318,
+      "area": 54070,
+      "centerX": 528,
+      "centerY": 193
+    },
+    {
+      "id": "mana",
+      "x": 52,
+      "y": 40,
+      "width": 254,
+      "height": 312,
+      "area": 55573,
+      "centerX": 179,
+      "centerY": 196
+    },
+    {
+      "id": "poison",
+      "x": 762,
+      "y": 40,
+      "width": 236,
+      "height": 312,
+      "area": 53068,
+      "centerX": 880,
+      "centerY": 196
+    },
+    {
+      "id": "speed",
+      "x": 1096,
+      "y": 40,
+      "width": 254,
+      "height": 312,
+      "area": 54683,
+      "centerX": 1223,
+      "centerY": 196
+    },
+    {
+      "id": "freeze",
+      "x": 234,
+      "y": 416,
+      "width": 236,
+      "height": 317,
+      "area": 52732,
+      "centerX": 352,
+      "centerY": 574.5
+    },
+    {
+      "id": "fire",
+      "x": 574,
+      "y": 416,
+      "width": 248,
+      "height": 317,
+      "area": 53553,
+      "centerX": 698,
+      "centerY": 574.5
+    },
+    {
+      "id": "smoke",
+      "x": 903,
+      "y": 416,
+      "width": 300,
+      "height": 317,
+      "area": 61613,
+      "centerX": 1053,
+      "centerY": 574.5
+    }
+  ]
+}

@@ -1,7 +1,20 @@
-﻿import { AbstractMesh, AssetContainer, AnimationGroup, DynamicTexture, Mesh, MeshBuilder, Scene, SceneLoader, StandardMaterial, Color3, Color4, ParticleSystem, PointLight, TransformNode, Vector3 } from "@babylonjs/core";
+import {
+  AbstractMesh,
+  AssetContainer,
+  AnimationGroup,
+  Color3,
+  Mesh,
+  MeshBuilder,
+  Scene,
+  SceneLoader,
+  StandardMaterial,
+  TransformNode,
+  Vector3,
+} from "@babylonjs/core";
 import { Client, Room } from "colyseus.js";
 import "@babylonjs/loaders/glTF";
 import { getServerUrl } from "./net/serverConfig";
+import { animatePickupVisual, createPickupVisual, disposePickupVisual, normalizePickupVisualKind, type PickupVisual } from "../game/pickupVisuals";
 
 type SchemaPlayer = {
   name: string;
@@ -103,17 +116,6 @@ type ProjectileVisual = {
   mesh: Mesh;
 };
 
-type PickupVisual = {
-  mesh: Mesh;
-  haloA: Mesh;
-  haloB: Mesh;
-  glow: Mesh;
-  light: PointLight;
-  systems: ParticleSystem[];
-  baseY: number;
-  phase: number;
-};
-
 export type ServerDebugInfo = {
   state: string;
   auth: string;
@@ -168,7 +170,6 @@ export class LegacyMultiplayerSync {
   private catModelId = 0;
   private catModelLoadPromise: Promise<void> | null = null;
   private catModelLoadFailed = false;
-  private pickupParticleTexture: DynamicTexture | null = null;
   private selfHp = 100;
   private selfMana = 90;
   private selfRespawnIn = 0;
@@ -659,156 +660,8 @@ export class LegacyMultiplayerSync {
   private upsertPickup(pickupId: string, pickup: SchemaPickup): void {
     let visual = this.pickupVisuals.get(pickupId);
     if (!visual) {
-      const mesh = MeshBuilder.CreateBox(`server-pickup-root-${pickupId}`, { size: 0.08 }, this.scene);
-      mesh.isVisible = false;
-      mesh.isPickable = false;
-
-      const crate = MeshBuilder.CreateBox(
-        `server-pickup-crate-${pickupId}`,
-        { width: 0.54, height: 0.44, depth: 0.54 },
-        this.scene,
-      );
-      crate.parent = mesh;
-
-      const mat = new StandardMaterial(`server-pickup-mat-${pickupId}`, this.scene);
-      if (pickup.kind === "health") {
-        mat.diffuseColor = new Color3(0.9, 0.9, 0.92);
-      } else {
-        mat.diffuseColor = new Color3(0.2, 0.26, 0.32);
-      }
-      crate.material = mat;
-
-      if (pickup.kind === "health") {
-        const crossMat = new StandardMaterial(`server-pickup-health-cross-mat-${pickupId}`, this.scene);
-        crossMat.diffuseColor = new Color3(0.9, 0.18, 0.2);
-        crossMat.emissiveColor = new Color3(0.28, 0.05, 0.05);
-        const crossV = MeshBuilder.CreateBox(
-          `server-pickup-health-v-${pickupId}`,
-          { width: 0.13, height: 0.28, depth: 0.06 },
-          this.scene,
-        );
-        crossV.parent = mesh;
-        crossV.position = new Vector3(0, 0, 0.3);
-        crossV.material = crossMat;
-        const crossH = MeshBuilder.CreateBox(
-          `server-pickup-health-h-${pickupId}`,
-          { width: 0.28, height: 0.13, depth: 0.06 },
-          this.scene,
-        );
-        crossH.parent = mesh;
-        crossH.position = new Vector3(0, 0, 0.3);
-        crossH.material = crossMat;
-      } else {
-        const accentMat = new StandardMaterial(`server-pickup-mana-accent-mat-${pickupId}`, this.scene);
-        accentMat.diffuseColor = new Color3(0.85, 0.67, 0.25);
-        accentMat.emissiveColor = new Color3(0.2, 0.14, 0.03);
-        const strap = MeshBuilder.CreateBox(
-          `server-pickup-mana-strap-${pickupId}`,
-          { width: 0.58, height: 0.08, depth: 0.18 },
-          this.scene,
-        );
-        strap.parent = mesh;
-        strap.position.y = 0.08;
-        strap.material = accentMat;
-      }
-
-      const auraMat = new StandardMaterial(`server-pickup-aura-mat-${pickupId}`, this.scene);
-      if (pickup.kind === "health") {
-        auraMat.emissiveColor = new Color3(0.5, 1.0, 0.65);
-        auraMat.diffuseColor = new Color3(0.18, 0.35, 0.22);
-      } else {
-        auraMat.emissiveColor = new Color3(0.45, 0.86, 1.0);
-        auraMat.diffuseColor = new Color3(0.12, 0.25, 0.35);
-      }
-      auraMat.alpha = 0.24;
-
-      const haloA = MeshBuilder.CreateTorus(
-        `server-pickup-aura-a-${pickupId}`,
-        { diameter: 1.1, thickness: 0.045, tessellation: 24 },
-        this.scene,
-      );
-      haloA.parent = mesh;
-      haloA.rotation.x = Math.PI / 2;
-      haloA.material = auraMat;
-
-      const haloB = MeshBuilder.CreateTorus(
-        `server-pickup-aura-b-${pickupId}`,
-        { diameter: 0.94, thickness: 0.04, tessellation: 24 },
-        this.scene,
-      );
-      haloB.parent = mesh;
-      haloB.rotation.z = Math.PI / 2;
-      haloB.material = auraMat;
-
-      const glow = MeshBuilder.CreateSphere(
-        `server-pickup-glow-${pickupId}`,
-        { diameterX: 0.88, diameterY: 0.52, diameterZ: 0.88, segments: 12 },
-        this.scene,
-      );
-      glow.parent = mesh;
-      glow.material = auraMat;
-
-      const light = new PointLight(`server-pickup-light-${pickupId}`, Vector3.Zero(), this.scene);
-      light.parent = mesh;
-      light.diffuse = pickup.kind === "health" ? new Color3(0.42, 1.0, 0.6) : new Color3(0.32, 0.78, 1.0);
-      light.specular = light.diffuse.scale(0.8);
-      light.intensity = 1.8;
-      light.range = 6.5;
-
-      const sparkle = new ParticleSystem(`server-pickup-spark-${pickupId}`, 150, this.scene);
-      sparkle.particleTexture = this.getPickupParticleTexture();
-      sparkle.emitter = mesh;
-      sparkle.minEmitBox = new Vector3(-0.2, 0.05, -0.2);
-      sparkle.maxEmitBox = new Vector3(0.2, 0.4, 0.2);
-      sparkle.color1 = pickup.kind === "health" ? new Color4(0.48, 1, 0.65, 0.5) : new Color4(0.4, 0.9, 1, 0.48);
-      sparkle.color2 = pickup.kind === "health" ? new Color4(0.2, 0.8, 0.45, 0.28) : new Color4(0.2, 0.55, 0.9, 0.25);
-      sparkle.colorDead = new Color4(0, 0, 0, 0);
-      sparkle.minSize = 0.06;
-      sparkle.maxSize = 0.16;
-      sparkle.minLifeTime = 0.35;
-      sparkle.maxLifeTime = 0.85;
-      sparkle.emitRate = 36;
-      sparkle.blendMode = ParticleSystem.BLENDMODE_ONEONE;
-      sparkle.gravity = new Vector3(0, 0.1, 0);
-      sparkle.direction1 = new Vector3(-0.2, 0.35, -0.2);
-      sparkle.direction2 = new Vector3(0.2, 0.6, 0.2);
-      sparkle.minEmitPower = 0.02;
-      sparkle.maxEmitPower = 0.14;
-      sparkle.updateSpeed = 0.02;
-      sparkle.start();
-
-      const dust = new ParticleSystem(`server-pickup-dust-${pickupId}`, 120, this.scene);
-      dust.particleTexture = this.getPickupParticleTexture();
-      dust.emitter = mesh;
-      dust.minEmitBox = new Vector3(-0.3, -0.08, -0.3);
-      dust.maxEmitBox = new Vector3(0.3, 0.15, 0.3);
-      dust.color1 = pickup.kind === "health" ? new Color4(0.5, 0.95, 0.7, 0.18) : new Color4(0.45, 0.8, 1, 0.16);
-      dust.color2 = pickup.kind === "health" ? new Color4(0.2, 0.6, 0.4, 0.08) : new Color4(0.2, 0.45, 0.8, 0.08);
-      dust.colorDead = new Color4(0, 0, 0, 0);
-      dust.minSize = 0.14;
-      dust.maxSize = 0.34;
-      dust.minLifeTime = 0.7;
-      dust.maxLifeTime = 1.35;
-      dust.emitRate = 18;
-      dust.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-      dust.gravity = new Vector3(0, 0.05, 0);
-      dust.direction1 = new Vector3(-0.14, 0.18, -0.14);
-      dust.direction2 = new Vector3(0.14, 0.3, 0.14);
-      dust.minEmitPower = 0.01;
-      dust.maxEmitPower = 0.08;
-      dust.updateSpeed = 0.02;
-      dust.start();
-
-      visual = {
-        mesh,
-        haloA,
-        haloB,
-        glow,
-        light,
-        systems: [sparkle, dust],
-        baseY: pickup.y,
-        phase: Math.random() * Math.PI * 2,
-      };
+      const kind = normalizePickupVisualKind(pickup.kind);
+      visual = createPickupVisual(this.scene, `server-${pickupId}`, kind, new Vector3(pickup.x, pickup.y, pickup.z));
       this.pickupVisuals.set(pickupId, visual);
     }
 
@@ -819,49 +672,15 @@ export class LegacyMultiplayerSync {
   private removePickup(pickupId: string): void {
     const visual = this.pickupVisuals.get(pickupId);
     if (!visual) return;
-    for (const system of visual.systems) {
-      system.stop();
-      system.dispose();
-    }
-    visual.light.dispose();
-    visual.mesh.dispose();
+    disposePickupVisual(visual);
     this.pickupVisuals.delete(pickupId);
   }
 
   private animatePickups(): void {
     const t = performance.now() * 0.001;
     for (const visual of this.pickupVisuals.values()) {
-      const p = t + visual.phase;
-      visual.mesh.position.y = visual.baseY + Math.sin(p * 2) * 0.08;
-      visual.haloA.rotation.y = p * 1.7;
-      visual.haloB.rotation.x = p * 1.3;
-      const pulse = 0.92 + (Math.sin(p * 3.2) * 0.5 + 0.5) * 0.16;
-      visual.glow.scaling.setAll(pulse);
-      visual.light.intensity = 1.55 + (Math.sin(p * 4) * 0.5 + 0.5) * 0.8;
+      animatePickupVisual(visual, t);
     }
-  }
-
-  private getPickupParticleTexture(): DynamicTexture {
-    if (this.pickupParticleTexture) return this.pickupParticleTexture;
-    const tex = new DynamicTexture("server-pickup-particle-tex", { width: 128, height: 128 }, this.scene, false);
-    const ctx = tex.getContext();
-    const grad = ctx.createRadialGradient(64, 64, 6, 64, 64, 62);
-    grad.addColorStop(0, "rgba(255,255,255,1)");
-    grad.addColorStop(0.24, "rgba(240,240,240,0.9)");
-    grad.addColorStop(0.58, "rgba(180,180,180,0.45)");
-    grad.addColorStop(1, "rgba(30,30,30,0)");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 128, 128);
-    for (let i = 0; i < 90; i += 1) {
-      const alpha = 0.02 + Math.random() * 0.08;
-      ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-      ctx.beginPath();
-      ctx.arc(Math.random() * 128, Math.random() * 128, 0.4 + Math.random() * 2.2, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    tex.update(false);
-    this.pickupParticleTexture = tex;
-    return tex;
   }
 
   private debug(message: string, payload?: Record<string, unknown>): void {
@@ -872,4 +691,5 @@ export class LegacyMultiplayerSync {
     console.debug("[MultiplayerSync]", message);
   }
 }
+
 

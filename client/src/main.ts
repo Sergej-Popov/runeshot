@@ -81,6 +81,8 @@ import {
   isTrampolineForLevel,
   parseNapCheat,
 } from "./game/state";
+import { SERVER_AUTHORITATIVE_ONLY } from "./game/featureFlags";
+import { animatePickupVisual, createPickupVisual, disposePickupVisual, type PickupVisual, type PickupVisualKind } from "./game/pickupVisuals";
 import { LegacyMultiplayerSync } from "./multiplayer/legacySync";
 
 type WeaponMode = "gun" | "cannon" | "minigun" | "flamethrower";
@@ -117,16 +119,9 @@ type EnemyShot = {
 
 type PickupKind = "health" | "mana" | "grenade" | "flame";
 type Pickup = {
-  mesh: Mesh;
   kind: PickupKind;
   amount: number;
-  haloA: Mesh;
-  haloB: Mesh;
-  glow: Mesh;
-  light: PointLight;
-  systems: ParticleSystem[];
-  baseY: number;
-  phase: number;
+  visual: PickupVisual;
 };
 
 type GrenadeProjectile = {
@@ -342,57 +337,6 @@ trampolineMat.emissiveColor = new Color3(0.04, 0.7, 0.6);
 const portalMat = new StandardMaterial("portal", scene);
 portalMat.diffuseColor = new Color3(0.1, 0.6, 0.95);
 portalMat.emissiveColor = new Color3(0.1, 0.8, 1.0);
-
-const pickupHealthBodyMat = new StandardMaterial("pickup-health-body", scene);
-pickupHealthBodyMat.diffuseColor = new Color3(0.9, 0.9, 0.92);
-const pickupHealthCrossMat = new StandardMaterial("pickup-health-cross", scene);
-pickupHealthCrossMat.diffuseColor = new Color3(0.9, 0.18, 0.2);
-pickupHealthCrossMat.emissiveColor = new Color3(0.35, 0.06, 0.06);
-
-const pickupAmmoBodyMat = new StandardMaterial("pickup-mana-body", scene);
-pickupAmmoBodyMat.diffuseColor = new Color3(0.2, 0.26, 0.32);
-const pickupGrenadeBodyMat = new StandardMaterial("pickup-grenade-body", scene);
-pickupGrenadeBodyMat.diffuseColor = new Color3(0.2, 0.34, 0.2);
-const pickupFlameBodyMat = new StandardMaterial("pickup-flame-body", scene);
-pickupFlameBodyMat.diffuseColor = new Color3(0.42, 0.18, 0.12);
-pickupFlameBodyMat.emissiveColor = new Color3(0.2, 0.06, 0.04);
-const pickupAmmoAccentMat = new StandardMaterial("pickup-mana-accent", scene);
-pickupAmmoAccentMat.diffuseColor = new Color3(0.85, 0.67, 0.25);
-pickupAmmoAccentMat.emissiveColor = new Color3(0.2, 0.14, 0.03);
-const pickupGrenadeAccentMat = new StandardMaterial("pickup-grenade-accent", scene);
-pickupGrenadeAccentMat.diffuseColor = new Color3(0.68, 0.88, 0.32);
-pickupGrenadeAccentMat.emissiveColor = new Color3(0.22, 0.35, 0.1);
-const pickupFlameAccentMat = new StandardMaterial("pickup-flame-accent", scene);
-pickupFlameAccentMat.diffuseColor = new Color3(0.96, 0.45, 0.14);
-pickupFlameAccentMat.emissiveColor = new Color3(0.4, 0.14, 0.03);
-const pickupFlameStripeMat = new StandardMaterial("pickup-flame-stripe", scene);
-pickupFlameStripeMat.diffuseColor = new Color3(0.08, 0.05, 0.05);
-pickupFlameStripeMat.emissiveColor = new Color3(0.02, 0.01, 0.01);
-
-const pickupAuraHealthMat = new StandardMaterial("pickup-aura-health", scene);
-pickupAuraHealthMat.emissiveColor = new Color3(0.5, 1.0, 0.65);
-pickupAuraHealthMat.diffuseColor = new Color3(0.18, 0.35, 0.22);
-pickupAuraHealthMat.alpha = 0.24;
-
-const pickupAuraAmmoMat = new StandardMaterial("pickup-aura-mana", scene);
-pickupAuraAmmoMat.emissiveColor = new Color3(0.45, 0.86, 1.0);
-pickupAuraAmmoMat.diffuseColor = new Color3(0.12, 0.25, 0.35);
-pickupAuraAmmoMat.alpha = 0.24;
-const pickupAuraFlameMat = new StandardMaterial("pickup-aura-flame", scene);
-pickupAuraFlameMat.emissiveColor = new Color3(1.0, 0.42, 0.14);
-pickupAuraFlameMat.diffuseColor = new Color3(0.35, 0.12, 0.07);
-pickupAuraFlameMat.alpha = 0.28;
-
-const pickupSparkHealthMat = new StandardMaterial("pickup-spark-health", scene);
-pickupSparkHealthMat.emissiveColor = new Color3(0.7, 1.0, 0.78);
-pickupSparkHealthMat.diffuseColor = new Color3(0.2, 0.45, 0.25);
-
-const pickupSparkAmmoMat = new StandardMaterial("pickup-spark-mana", scene);
-pickupSparkAmmoMat.emissiveColor = new Color3(0.62, 0.9, 1.0);
-pickupSparkAmmoMat.diffuseColor = new Color3(0.16, 0.3, 0.44);
-const pickupSparkFlameMat = new StandardMaterial("pickup-spark-flame", scene);
-pickupSparkFlameMat.emissiveColor = new Color3(1.0, 0.58, 0.22);
-pickupSparkFlameMat.diffuseColor = new Color3(0.45, 0.2, 0.08);
 
 const grenadeFlameMat = new StandardMaterial("grenade-flame", scene);
 grenadeFlameMat.emissiveColor = new Color3(1.0, 0.62, 0.2);
@@ -862,9 +806,7 @@ function disposeLevel(): void {
   smokeClouds = [];
 
   for (const pickup of pickups) {
-    for (const sys of pickup.systems) sys.dispose();
-    pickup.light.dispose();
-    pickup.mesh.dispose();
+    disposePickupVisual(pickup.visual);
   }
   pickups = [];
 
@@ -1235,7 +1177,7 @@ function createEnemy(type: EnemyType, mx: number, my: number): EnemyEntity {
 }
 
 function spawnEnemiesForLevel(): void {
-  if (multiplayerSync) return;
+  if (SERVER_AUTHORITATIVE_ONLY || multiplayerSync) return;
 
   const config = LEVELS[currentLevel];
   const levelSpawn = LEVELS[currentLevel].playerSpawn;
@@ -1272,262 +1214,17 @@ function spawnEnemiesForLevel(): void {
 
 function createPickupModel(kind: PickupKind, id: number, mx: number, my: number, amount: number): Pickup {
   const floor = floorHeightAtMap(mx, my);
-  const root = MeshBuilder.CreateBox(`pickup-root-${kind}-${id}`, { size: 0.12 }, scene);
-  root.isVisible = false;
-  root.isPickable = false;
-  root.position.copyFrom(mapToWorld(mx, my, floor + 0.4));
-
-  const crate = MeshBuilder.CreateBox(`pickup-crate-${kind}-${id}`, {
-    width: 0.54,
-    height: 0.44,
-    depth: 0.54,
-  }, scene);
-  crate.parent = root;
-  crate.material = kind === "health"
-    ? pickupHealthBodyMat
-    : kind === "mana"
-      ? pickupAmmoBodyMat
-      : kind === "grenade"
-        ? pickupGrenadeBodyMat
-        : pickupFlameBodyMat;
-
-  if (kind === "health") {
-    const crossV = MeshBuilder.CreateBox(`pickup-health-v-${id}`, { width: 0.13, height: 0.28, depth: 0.06 }, scene);
-    crossV.parent = root;
-    crossV.position = new Vector3(0, 0, 0.3);
-    crossV.material = pickupHealthCrossMat;
-
-    const crossH = MeshBuilder.CreateBox(`pickup-health-h-${id}`, { width: 0.28, height: 0.13, depth: 0.06 }, scene);
-    crossH.parent = root;
-    crossH.position = new Vector3(0, 0, 0.3);
-    crossH.material = pickupHealthCrossMat;
-
-    const topCrossV = crossV.clone(`pickup-health-top-v-${id}`)!;
-    topCrossV.position = new Vector3(0, 0.23, 0);
-    topCrossV.rotation.x = Math.PI / 2;
-    const topCrossH = crossH.clone(`pickup-health-top-h-${id}`)!;
-    topCrossH.position = new Vector3(0, 0.23, 0);
-    topCrossH.rotation.x = Math.PI / 2;
-  } else if (kind === "mana") {
-    const strap = MeshBuilder.CreateBox(`pickup-mana-strap-${id}`, { width: 0.58, height: 0.08, depth: 0.18 }, scene);
-    strap.parent = root;
-    strap.position.y = 0.08;
-    strap.material = pickupAmmoAccentMat;
-
-    for (let i = 0; i < 3; i += 1) {
-      const round = MeshBuilder.CreateCylinder(`pickup-mana-round-${id}-${i}`, {
-        height: 0.2,
-        diameter: 0.08,
-        tessellation: 10,
-      }, scene);
-      round.parent = root;
-      round.position = new Vector3(-0.12 + i * 0.12, 0.24, 0);
-      round.rotation.z = Math.PI / 2;
-      round.material = pickupAmmoAccentMat;
-    }
-  } else if (kind === "grenade") {
-    const body = MeshBuilder.CreateSphere(`pickup-grenade-body-${id}`, {
-      diameterX: 0.28,
-      diameterY: 0.34,
-      diameterZ: 0.28,
-      segments: 10,
-    }, scene);
-    body.parent = root;
-    body.position.y = 0.03;
-    body.material = pickupGrenadeAccentMat;
-
-    const pin = MeshBuilder.CreateTorus(`pickup-grenade-pin-${id}`, { diameter: 0.18, thickness: 0.026, tessellation: 18 }, scene);
-    pin.parent = root;
-    pin.position.y = 0.23;
-    pin.rotation.x = Math.PI / 2;
-    pin.material = pickupAmmoAccentMat;
-  } else {
-    const tank = MeshBuilder.CreateCylinder(`pickup-flame-tank-${id}`, { diameter: 0.3, height: 0.44, tessellation: 20 }, scene);
-    tank.parent = root;
-    tank.position.y = 0.07;
-    tank.material = pickupFlameBodyMat;
-
-    const tankCap = MeshBuilder.CreateCylinder(`pickup-flame-cap-${id}`, { diameter: 0.24, height: 0.09, tessellation: 20 }, scene);
-    tankCap.parent = root;
-    tankCap.position.y = 0.33;
-    tankCap.material = pickupFlameAccentMat;
-
-    const nozzle = MeshBuilder.CreateCylinder(`pickup-flame-nozzle-${id}`, { diameter: 0.08, height: 0.38, tessellation: 14 }, scene);
-    nozzle.parent = root;
-    nozzle.rotation.z = Math.PI / 2;
-    nozzle.position = new Vector3(0.2, 0.18, 0);
-    nozzle.material = pickupFlameAccentMat;
-
-    const handle = MeshBuilder.CreateTorus(`pickup-flame-handle-${id}`, { diameter: 0.22, thickness: 0.035, tessellation: 20 }, scene);
-    handle.parent = root;
-    handle.position = new Vector3(-0.1, 0.16, 0);
-    handle.rotation.y = Math.PI / 2;
-    handle.material = pickupAmmoAccentMat;
-
-    const stripeA = MeshBuilder.CreateBox(`pickup-flame-stripe-a-${id}`, { width: 0.33, height: 0.05, depth: 0.05 }, scene);
-    stripeA.parent = root;
-    stripeA.position = new Vector3(0, 0.02, 0.16);
-    stripeA.rotation.y = Math.PI * 0.22;
-    stripeA.material = pickupFlameStripeMat;
-
-    const stripeB = MeshBuilder.CreateBox(`pickup-flame-stripe-b-${id}`, { width: 0.33, height: 0.05, depth: 0.05 }, scene);
-    stripeB.parent = root;
-    stripeB.position = new Vector3(0, 0.12, -0.16);
-    stripeB.rotation.y = -Math.PI * 0.22;
-    stripeB.material = pickupFlameStripeMat;
-  }
-
-  const auraMat = kind === "health"
-    ? pickupAuraHealthMat
-    : kind === "mana"
-      ? pickupAuraAmmoMat
-      : kind === "flame"
-        ? pickupAuraFlameMat
-        : pickupAuraHealthMat;
-  const auraA = MeshBuilder.CreateTorus(`pickup-aura-a-${kind}-${id}`, { diameter: 1.1, thickness: 0.045, tessellation: 24 }, scene);
-  auraA.parent = root;
-  auraA.rotation.x = Math.PI / 2;
-  auraA.material = auraMat;
-
-  const auraB = MeshBuilder.CreateTorus(`pickup-aura-b-${kind}-${id}`, { diameter: 0.94, thickness: 0.04, tessellation: 24 }, scene);
-  auraB.parent = root;
-  auraB.rotation.z = Math.PI / 2;
-  auraB.material = auraMat;
-
-  const glow = MeshBuilder.CreateSphere(`pickup-glow-${kind}-${id}`, {
-    diameterX: 0.88,
-    diameterY: 0.52,
-    diameterZ: 0.88,
-    segments: 12,
-  }, scene);
-  glow.parent = root;
-  glow.material = auraMat;
-
-  const light = new PointLight(`pickup-light-${kind}-${id}`, root.position.clone(), scene);
-  light.parent = root;
-  light.diffuse = kind === "health"
-    ? new Color3(0.42, 1.0, 0.6)
-    : kind === "mana"
-      ? new Color3(0.32, 0.78, 1.0)
-      : kind === "flame"
-        ? new Color3(1.0, 0.5, 0.2)
-        : new Color3(0.45, 0.88, 0.42);
-  light.specular = light.diffuse.scale(0.8);
-  light.intensity = 1.8;
-  light.range = 6.5;
-
-  const auraColorA =
-    kind === "health"
-      ? new Color4(0.48, 1.0, 0.65, 0.42)
-      : kind === "mana"
-        ? new Color4(0.4, 0.9, 1.0, 0.4)
-        : kind === "flame"
-          ? new Color4(1.0, 0.56, 0.2, 0.44)
-          : new Color4(0.75, 1.0, 0.5, 0.42);
-  const auraColorB =
-    kind === "health"
-      ? new Color4(0.2, 0.8, 0.45, 0.2)
-      : kind === "mana"
-        ? new Color4(0.2, 0.55, 0.9, 0.2)
-        : kind === "flame"
-          ? new Color4(0.62, 0.24, 0.08, 0.22)
-          : new Color4(0.45, 0.8, 0.24, 0.2);
-
-  const auraSpark = new ParticleSystem(`pickup-aura-${kind}-${id}`, 260, scene);
-  auraSpark.particleTexture = smokeParticleTex;
-  auraSpark.emitter = root;
-  auraSpark.minEmitBox = new Vector3(-0.2, 0.05, -0.2);
-  auraSpark.maxEmitBox = new Vector3(0.2, 0.4, 0.2);
-  auraSpark.color1 = auraColorA;
-  auraSpark.color2 = auraColorB;
-  auraSpark.colorDead = new Color4(0, 0, 0, 0);
-  auraSpark.minSize = 0.12;
-  auraSpark.maxSize = 0.36;
-  auraSpark.minLifeTime = 0.35;
-  auraSpark.maxLifeTime = 0.85;
-  auraSpark.emitRate = 42;
-  auraSpark.blendMode = ParticleSystem.BLENDMODE_ONEONE;
-  auraSpark.gravity = new Vector3(0, 0.15, 0);
-  auraSpark.direction1 = new Vector3(-0.3, 0.35, -0.3);
-  auraSpark.direction2 = new Vector3(0.3, 0.65, 0.3);
-  auraSpark.minEmitPower = 0.02;
-  auraSpark.maxEmitPower = 0.18;
-  auraSpark.updateSpeed = 0.02;
-  auraSpark.start();
-
-  const auraDust = new ParticleSystem(`pickup-dust-${kind}-${id}`, 200, scene);
-  auraDust.particleTexture = smokeParticleTex;
-  auraDust.emitter = root;
-  auraDust.minEmitBox = new Vector3(-0.35, -0.1, -0.35);
-  auraDust.maxEmitBox = new Vector3(0.35, 0.18, 0.35);
-  auraDust.color1 = new Color4(auraColorA.r, auraColorA.g, auraColorA.b, 0.22);
-  auraDust.color2 = new Color4(auraColorB.r, auraColorB.g, auraColorB.b, 0.14);
-  auraDust.colorDead = new Color4(0, 0, 0, 0);
-  auraDust.minSize = 0.18;
-  auraDust.maxSize = 0.45;
-  auraDust.minLifeTime = 0.7;
-  auraDust.maxLifeTime = 1.4;
-  auraDust.emitRate = 22;
-  auraDust.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-  auraDust.gravity = new Vector3(0, 0.08, 0);
-  auraDust.direction1 = new Vector3(-0.18, 0.2, -0.18);
-  auraDust.direction2 = new Vector3(0.18, 0.32, 0.18);
-  auraDust.minEmitPower = 0.01;
-  auraDust.maxEmitPower = 0.08;
-  auraDust.updateSpeed = 0.02;
-  auraDust.start();
-
-  if (kind === "flame") {
-    const flameJets = new ParticleSystem(`pickup-flame-jet-${id}`, 200, scene);
-    flameJets.particleTexture = fireParticleTex;
-    flameJets.emitter = root;
-    flameJets.minEmitBox = new Vector3(0.16, 0.14, -0.03);
-    flameJets.maxEmitBox = new Vector3(0.25, 0.22, 0.03);
-    flameJets.color1 = new Color4(1.0, 0.8, 0.35, 0.85);
-    flameJets.color2 = new Color4(1.0, 0.4, 0.12, 0.72);
-    flameJets.colorDead = new Color4(0.2, 0.08, 0.02, 0);
-    flameJets.minSize = 0.08;
-    flameJets.maxSize = 0.2;
-    flameJets.minLifeTime = 0.18;
-    flameJets.maxLifeTime = 0.32;
-    flameJets.emitRate = 48;
-    flameJets.blendMode = ParticleSystem.BLENDMODE_ONEONE;
-    flameJets.direction1 = new Vector3(0.4, 0.02, -0.05);
-    flameJets.direction2 = new Vector3(0.8, 0.22, 0.05);
-    flameJets.minEmitPower = 0.12;
-    flameJets.maxEmitPower = 0.44;
-    flameJets.updateSpeed = 0.015;
-    flameJets.start();
-    return {
-      mesh: root,
-      kind,
-      amount,
-      haloA: auraA,
-      haloB: auraB,
-      glow,
-      light,
-      systems: [auraSpark, auraDust, flameJets],
-      baseY: root.position.y,
-      phase: Math.random() * Math.PI * 2,
-    };
-  }
-
+  const position = mapToWorld(mx, my, floor + 0.4);
+  const visual = createPickupVisual(scene, `${kind}-${id}`, kind as PickupVisualKind, position);
   return {
-    mesh: root,
     kind,
     amount,
-    haloA: auraA,
-    haloB: auraB,
-    glow,
-    light,
-    systems: [auraSpark, auraDust],
-    baseY: root.position.y,
-    phase: Math.random() * Math.PI * 2,
+    visual,
   };
 }
 
 function spawnPickupsForLevel(): void {
-  if (multiplayerSync) return;
+  if (SERVER_AUTHORITATIVE_ONLY || multiplayerSync) return;
 
   const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
   const manaCount = 4;
@@ -1715,7 +1412,8 @@ function applyFlamethrowerDamage(): void {
 function fireWeapon(): void {
   if (gameOver || victory) return;
 
-  if (multiplayerSync) {
+  if (SERVER_AUTHORITATIVE_ONLY || multiplayerSync) {
+    if (!multiplayerSync) return;
     if (mana < 2) return;
     mana -= 2;
     fireCooldown = 0.22;
@@ -2615,27 +2313,14 @@ function updateSmokeClouds(dt: number): void {
   }
 }
 
-function updatePickups(dt: number): void {
+function updatePickups(_dt: number): void {
+  const t = performance.now() * 0.001;
   for (let i = pickups.length - 1; i >= 0; i -= 1) {
     const p = pickups[i];
-    p.phase += dt * 2.8;
-    p.mesh.position.y = p.baseY + Math.sin(p.phase) * 0.065;
-    p.mesh.rotation.y += dt * 1.2;
-    p.haloA.rotation.y += dt * 1.8;
-    p.haloB.rotation.x += dt * 1.35;
-    const auraPulse = 0.92 + Math.sin(p.phase * 2.3) * 0.12;
-    p.haloA.scaling.setAll(auraPulse);
-    p.haloB.scaling.setAll(1.08 - (auraPulse - 0.92) * 0.7);
-    p.glow.scaling.setAll(0.9 + Math.sin(p.phase * 1.8) * 0.08);
-    p.light.intensity = 1.55 + Math.sin(p.phase * 3.1) * 0.55;
+    animatePickupVisual(p.visual, t);
 
-    const pulseRateA = 36 + Math.sin(p.phase * 3.4) * 9;
-    const pulseRateB = 18 + Math.sin(p.phase * 2.2 + 1.2) * 5;
-    if (p.systems[0]) p.systems[0].emitRate = Math.max(12, pulseRateA);
-    if (p.systems[1]) p.systems[1].emitRate = Math.max(8, pulseRateB);
-
-    const dx = p.mesh.position.x - camera.position.x;
-    const dz = p.mesh.position.z - camera.position.z;
+    const dx = p.visual.mesh.position.x - camera.position.x;
+    const dz = p.visual.mesh.position.z - camera.position.z;
     const dist2D = Math.hypot(dx, dz);
     if (dist2D > 0.95) continue;
 
@@ -2653,9 +2338,7 @@ function updatePickups(dt: number): void {
     }
 
     playPickupSound();
-    for (const sys of p.systems) sys.dispose();
-    p.light.dispose();
-    p.mesh.dispose();
+    disposePickupVisual(p.visual);
     pickups.splice(i, 1);
     updateHud();
   }
@@ -2755,7 +2438,7 @@ function updatePlayer(dt: number): void {
 
   if (fireCooldown > 0) fireCooldown -= dt;
   if (grenadeCooldown > 0) grenadeCooldown -= dt;
-  if (!multiplayerSync && !gameOver && !victory) {
+  if (!SERVER_AUTHORITATIVE_ONLY && !multiplayerSync && !gameOver && !victory) {
     mana = Math.min(MAX_MANA, mana + MANA_RECOVER_PER_SEC * dt);
   }
   const flameActive = weaponMode === "flamethrower" && input.MouseLeft && !cheatOpen && flameFuel > 0;
@@ -2778,7 +2461,8 @@ function updatePortal(dt: number): void {
 
     const dist = Vector3.Distance(portalMesh.position, camera.position);
     if (dist < 1.4) {
-      if (multiplayerSync) {
+      if (SERVER_AUTHORITATIVE_ONLY || multiplayerSync) {
+        if (!multiplayerSync) return;
         multiplayerSync.requestPortalEnter();
         return;
       }
@@ -3171,7 +2855,7 @@ function gameLoop(now: number): void {
   syncMultiplayerWorldState();
 
   if (!gameOver && !victory) {
-    if (!multiplayerSync) {
+    if (!SERVER_AUTHORITATIVE_ONLY && !multiplayerSync) {
       updateEnemies(dt);
       updateEnemyShots(dt);
       updatePickups(dt);
@@ -3180,7 +2864,9 @@ function gameLoop(now: number): void {
     updateSmokeClouds(dt);
     updatePortal(dt);
 
-    if (!multiplayerSync && !portalActive && enemies.filter((e) => e.health > 0).length === 0) setPortalActive(true);
+    if (!SERVER_AUTHORITATIVE_ONLY && !multiplayerSync && !portalActive && enemies.filter((e) => e.health > 0).length === 0) {
+      setPortalActive(true);
+    }
   }
 
   syncMultiplayerVitals();
@@ -3196,10 +2882,12 @@ async function init(): Promise<void> {
   makeGunModel();
   handleInputBindings();
   await loadEnemyModelTemplate();
-  multiplayerSync = new LegacyMultiplayerSync(scene, (status) => {
-    setCheatStatus(status);
-  });
-  void multiplayerSync.connect();
+  if (SERVER_AUTHORITATIVE_ONLY) {
+    multiplayerSync = new LegacyMultiplayerSync(scene, (status) => {
+      setCheatStatus(status);
+    });
+    void multiplayerSync.connect();
+  }
   startLevel(0, true);
   engine.runRenderLoop(() => gameLoop(performance.now()));
   window.addEventListener("resize", () => engine.resize());
