@@ -8,16 +8,16 @@ export interface LevelConfig {
 export const MAP = [
   "################",
   "#..............#",
-  "#..####........#",
   "#..............#",
-  "#......####....#",
   "#..............#",
-  "#...#..........#",
-  "#...#.....######",
-  "#...#..........#",
   "#..............#",
-  "#......#.......#",
-  "#......#.......#",
+  "#..............#",
+  "#..............#",
+  "#..............#",
+  "#..............#",
+  "#..............#",
+  "#..............#",
+  "#..............#",
   "#..............#",
   "#..............#",
   "#..............#",
@@ -206,10 +206,6 @@ export function isWallForLevel(levelIndex: number, mx: number, my: number): bool
   if (mx < 0 || my < 0 || mx >= MAP[0].length || my >= MAP.length) return true;
   const x = Math.floor(mx);
   const y = Math.floor(my);
-  const k = key(x, y);
-  const t = TERRAIN[clampLevel(levelIndex)];
-  if (t.openWalls.has(k)) return false;
-  if (t.extraWalls.has(k)) return true;
   return MAP[y][x] === "#";
 }
 
@@ -218,7 +214,7 @@ export function floorHeightForLevel(levelIndex: number, mx: number, my: number):
   const x = Math.floor(mx);
   const y = Math.floor(my);
   const t = TERRAIN[clampLevel(levelIndex)];
-  return t.heights.get(key(x, y)) ?? 0;
+  return t.pits.has(key(x, y)) ? PIT_FLOOR_HEIGHT : 0;
 }
 
 export function cellKindForLevel(levelIndex: number, x: number, y: number): CellKind {
@@ -226,9 +222,6 @@ export function cellKindForLevel(levelIndex: number, x: number, y: number): Cell
   const k = key(x, y);
   if (t.trampolines.has(k)) return "trampoline";
   if (t.pits.has(k)) return "pit";
-  if (t.stairs.has(k)) return "stairs";
-  const h = t.heights.get(k) ?? 0;
-  if (h >= 1.0) return "platform";
   return "floor";
 }
 

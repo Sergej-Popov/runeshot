@@ -1,4 +1,4 @@
-import { Client, Room } from "colyseus.js";
+﻿import { Client, Room } from "colyseus.js";
 import type { InputSnapshot, RemotePlayerState } from "../types";
 import { getServerUrl } from "./serverConfig";
 
@@ -9,7 +9,7 @@ type SchemaPlayer = {
   z: number;
   rotY: number;
   hp: number;
-  ammo: number;
+  mana: number;
 };
 
 type PlayerMapSchema = {
@@ -42,7 +42,7 @@ function asRemotePlayerState(sessionId: string, player: SchemaPlayer): RemotePla
     z: player.z,
     rotY: player.rotY,
     hp: player.hp,
-    ammo: player.ammo,
+    mana: player.mana,
   };
 }
 

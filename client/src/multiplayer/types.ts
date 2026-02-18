@@ -1,4 +1,4 @@
-export type InputSnapshot = {
+﻿export type InputSnapshot = {
   forward: number;
   strafe: number;
   turn: number;
@@ -14,5 +14,5 @@ export type RemotePlayerState = {
   z: number;
   rotY: number;
   hp: number;
-  ammo: number;
+  mana: number;
 };

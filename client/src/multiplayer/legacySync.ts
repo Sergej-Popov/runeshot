@@ -1,4 +1,4 @@
-import { AbstractMesh, AssetContainer, AnimationGroup, DynamicTexture, Mesh, MeshBuilder, Scene, SceneLoader, StandardMaterial, Color3, Color4, ParticleSystem, PointLight, TransformNode, Vector3 } from "@babylonjs/core";
+﻿import { AbstractMesh, AssetContainer, AnimationGroup, DynamicTexture, Mesh, MeshBuilder, Scene, SceneLoader, StandardMaterial, Color3, Color4, ParticleSystem, PointLight, TransformNode, Vector3 } from "@babylonjs/core";
 import { Client, Room } from "colyseus.js";
 import "@babylonjs/loaders/glTF";
 import { getServerUrl } from "./net/serverConfig";
@@ -10,7 +10,7 @@ type SchemaPlayer = {
   z: number;
   rotY: number;
   hp: number;
-  ammo: number;
+  mana: number;
   respawnIn: number;
 };
 
@@ -73,7 +73,7 @@ type LocalPose = {
   z: number;
   rotY: number;
   hp: number;
-  ammo: number;
+  mana: number;
 };
 
 type ShootDirection = {
@@ -170,7 +170,7 @@ export class LegacyMultiplayerSync {
   private catModelLoadFailed = false;
   private pickupParticleTexture: DynamicTexture | null = null;
   private selfHp = 100;
-  private selfAmmo = 90;
+  private selfMana = 90;
   private selfRespawnIn = 0;
   private selfX = 0;
   private selfY = 1;
@@ -224,10 +224,10 @@ export class LegacyMultiplayerSync {
     return this.catVisuals.size;
   }
 
-  getSelfVitals(): { hp: number; ammo: number; respawnIn: number } {
+  getSelfVitals(): { hp: number; mana: number; respawnIn: number } {
     return {
       hp: this.selfHp,
-      ammo: this.selfAmmo,
+      mana: this.selfMana,
       respawnIn: this.selfRespawnIn,
     };
   }
@@ -441,7 +441,7 @@ export class LegacyMultiplayerSync {
         this.selfZ = player.z;
         this.selfRotY = player.rotY;
         this.selfHp = player.hp;
-        this.selfAmmo = player.ammo;
+        this.selfMana = player.mana;
         this.selfRespawnIn = player.respawnIn;
         return;
       }
@@ -699,11 +699,11 @@ export class LegacyMultiplayerSync {
         crossH.position = new Vector3(0, 0, 0.3);
         crossH.material = crossMat;
       } else {
-        const accentMat = new StandardMaterial(`server-pickup-ammo-accent-mat-${pickupId}`, this.scene);
+        const accentMat = new StandardMaterial(`server-pickup-mana-accent-mat-${pickupId}`, this.scene);
         accentMat.diffuseColor = new Color3(0.85, 0.67, 0.25);
         accentMat.emissiveColor = new Color3(0.2, 0.14, 0.03);
         const strap = MeshBuilder.CreateBox(
-          `server-pickup-ammo-strap-${pickupId}`,
+          `server-pickup-mana-strap-${pickupId}`,
           { width: 0.58, height: 0.08, depth: 0.18 },
           this.scene,
         );
@@ -872,3 +872,4 @@ export class LegacyMultiplayerSync {
     console.debug("[MultiplayerSync]", message);
   }
 }
+

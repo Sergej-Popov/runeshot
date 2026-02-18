@@ -1,4 +1,4 @@
-import {
+﻿import {
   AbstractMesh,
   AssetContainer,
   AnimationGroup,
@@ -25,7 +25,6 @@ import {
 import "@babylonjs/loaders/OBJ";
 import "@babylonjs/loaders/glTF";
 import {
-  ammoEl,
   bossBarEl,
   bossHudEl,
   bossTextEl,
@@ -42,6 +41,8 @@ import {
   healthBarEl,
   healthTextEl,
   levelEl,
+  manaBarEl,
+  manaTextEl,
   minimapCtx,
   minimapEl,
   serverDebugAuthEl,
@@ -114,7 +115,7 @@ type EnemyShot = {
   damage: number;
 };
 
-type PickupKind = "health" | "ammo" | "grenade" | "flame";
+type PickupKind = "health" | "mana" | "grenade" | "flame";
 type Pickup = {
   mesh: Mesh;
   kind: PickupKind;
@@ -190,6 +191,8 @@ const MAX_STAMINA = 5;
 const STAMINA_DRAIN_PER_SEC = 1;
 const STAMINA_RECOVER_PER_SEC = 1;
 const STAMINA_RECOVER_UNLOCK = 1.5;
+const MAX_MANA = 220;
+const MANA_RECOVER_PER_SEC = 0.75;
 const FLAMETHROWER_MAX_FUEL = 220;
 const PIT_DEPTH = PIT_FLOOR_HEIGHT;
 const MINIMAP_SIZES = [150, 190, 230];
@@ -346,14 +349,14 @@ const pickupHealthCrossMat = new StandardMaterial("pickup-health-cross", scene);
 pickupHealthCrossMat.diffuseColor = new Color3(0.9, 0.18, 0.2);
 pickupHealthCrossMat.emissiveColor = new Color3(0.35, 0.06, 0.06);
 
-const pickupAmmoBodyMat = new StandardMaterial("pickup-ammo-body", scene);
+const pickupAmmoBodyMat = new StandardMaterial("pickup-mana-body", scene);
 pickupAmmoBodyMat.diffuseColor = new Color3(0.2, 0.26, 0.32);
 const pickupGrenadeBodyMat = new StandardMaterial("pickup-grenade-body", scene);
 pickupGrenadeBodyMat.diffuseColor = new Color3(0.2, 0.34, 0.2);
 const pickupFlameBodyMat = new StandardMaterial("pickup-flame-body", scene);
 pickupFlameBodyMat.diffuseColor = new Color3(0.42, 0.18, 0.12);
 pickupFlameBodyMat.emissiveColor = new Color3(0.2, 0.06, 0.04);
-const pickupAmmoAccentMat = new StandardMaterial("pickup-ammo-accent", scene);
+const pickupAmmoAccentMat = new StandardMaterial("pickup-mana-accent", scene);
 pickupAmmoAccentMat.diffuseColor = new Color3(0.85, 0.67, 0.25);
 pickupAmmoAccentMat.emissiveColor = new Color3(0.2, 0.14, 0.03);
 const pickupGrenadeAccentMat = new StandardMaterial("pickup-grenade-accent", scene);
@@ -371,7 +374,7 @@ pickupAuraHealthMat.emissiveColor = new Color3(0.5, 1.0, 0.65);
 pickupAuraHealthMat.diffuseColor = new Color3(0.18, 0.35, 0.22);
 pickupAuraHealthMat.alpha = 0.24;
 
-const pickupAuraAmmoMat = new StandardMaterial("pickup-aura-ammo", scene);
+const pickupAuraAmmoMat = new StandardMaterial("pickup-aura-mana", scene);
 pickupAuraAmmoMat.emissiveColor = new Color3(0.45, 0.86, 1.0);
 pickupAuraAmmoMat.diffuseColor = new Color3(0.12, 0.25, 0.35);
 pickupAuraAmmoMat.alpha = 0.24;
@@ -384,7 +387,7 @@ const pickupSparkHealthMat = new StandardMaterial("pickup-spark-health", scene);
 pickupSparkHealthMat.emissiveColor = new Color3(0.7, 1.0, 0.78);
 pickupSparkHealthMat.diffuseColor = new Color3(0.2, 0.45, 0.25);
 
-const pickupSparkAmmoMat = new StandardMaterial("pickup-spark-ammo", scene);
+const pickupSparkAmmoMat = new StandardMaterial("pickup-spark-mana", scene);
 pickupSparkAmmoMat.emissiveColor = new Color3(0.62, 0.9, 1.0);
 pickupSparkAmmoMat.diffuseColor = new Color3(0.16, 0.3, 0.44);
 const pickupSparkFlameMat = new StandardMaterial("pickup-spark-flame", scene);
@@ -446,7 +449,7 @@ let recoil = 0;
 let currentLevel = 0;
 let health = 100;
 let maxHealth = 100;
-let ammo = 60;
+let mana = 60;
 let grenades = 1;
 let smokeGrenades = 2;
 let portalActive = false;
@@ -565,7 +568,8 @@ function updateHud(): void {
   levelEl.textContent = multiplayerRespawnSeconds > 0
     ? `Respawn: ${multiplayerRespawnSeconds}s`
     : `Level: ${currentLevel + 1}/${LEVELS.length}`;
-  ammoEl.textContent = `Ammo: ${ammo}`;
+  manaTextEl.textContent = `Mana: ${Math.floor(mana)}/${MAX_MANA}`;
+  manaBarEl.style.width = `${Math.max(0, Math.min(100, (mana / MAX_MANA) * 100))}%`;
   grenadesEl.textContent = `Grenades: ${grenades}/3`;
   smokeGrenadesEl.textContent = `Smoke: ${smokeGrenades}/2`;
   const weaponName = weaponMode === "flamethrower"
@@ -1281,7 +1285,7 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
   crate.parent = root;
   crate.material = kind === "health"
     ? pickupHealthBodyMat
-    : kind === "ammo"
+    : kind === "mana"
       ? pickupAmmoBodyMat
       : kind === "grenade"
         ? pickupGrenadeBodyMat
@@ -1304,14 +1308,14 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
     const topCrossH = crossH.clone(`pickup-health-top-h-${id}`)!;
     topCrossH.position = new Vector3(0, 0.23, 0);
     topCrossH.rotation.x = Math.PI / 2;
-  } else if (kind === "ammo") {
-    const strap = MeshBuilder.CreateBox(`pickup-ammo-strap-${id}`, { width: 0.58, height: 0.08, depth: 0.18 }, scene);
+  } else if (kind === "mana") {
+    const strap = MeshBuilder.CreateBox(`pickup-mana-strap-${id}`, { width: 0.58, height: 0.08, depth: 0.18 }, scene);
     strap.parent = root;
     strap.position.y = 0.08;
     strap.material = pickupAmmoAccentMat;
 
     for (let i = 0; i < 3; i += 1) {
-      const round = MeshBuilder.CreateCylinder(`pickup-ammo-round-${id}-${i}`, {
+      const round = MeshBuilder.CreateCylinder(`pickup-mana-round-${id}-${i}`, {
         height: 0.2,
         diameter: 0.08,
         tessellation: 10,
@@ -1375,7 +1379,7 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
 
   const auraMat = kind === "health"
     ? pickupAuraHealthMat
-    : kind === "ammo"
+    : kind === "mana"
       ? pickupAuraAmmoMat
       : kind === "flame"
         ? pickupAuraFlameMat
@@ -1403,7 +1407,7 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
   light.parent = root;
   light.diffuse = kind === "health"
     ? new Color3(0.42, 1.0, 0.6)
-    : kind === "ammo"
+    : kind === "mana"
       ? new Color3(0.32, 0.78, 1.0)
       : kind === "flame"
         ? new Color3(1.0, 0.5, 0.2)
@@ -1415,7 +1419,7 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
   const auraColorA =
     kind === "health"
       ? new Color4(0.48, 1.0, 0.65, 0.42)
-      : kind === "ammo"
+      : kind === "mana"
         ? new Color4(0.4, 0.9, 1.0, 0.4)
         : kind === "flame"
           ? new Color4(1.0, 0.56, 0.2, 0.44)
@@ -1423,7 +1427,7 @@ function createPickupModel(kind: PickupKind, id: number, mx: number, my: number,
   const auraColorB =
     kind === "health"
       ? new Color4(0.2, 0.8, 0.45, 0.2)
-      : kind === "ammo"
+      : kind === "mana"
         ? new Color4(0.2, 0.55, 0.9, 0.2)
         : kind === "flame"
           ? new Color4(0.62, 0.24, 0.08, 0.22)
@@ -1526,7 +1530,7 @@ function spawnPickupsForLevel(): void {
   if (multiplayerSync) return;
 
   const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
-  const ammoCount = 4;
+  const manaCount = 4;
   const grenadeCount = 1 + Math.floor(currentLevel / 3);
   const flameCount = currentLevel >= 1 ? 1 + Math.floor(currentLevel / 4) : 0;
   const pickPoint = (index: number): { x: number; y: number } => {
@@ -1544,9 +1548,9 @@ function spawnPickupsForLevel(): void {
     pickups.push(createPickupModel("health", i, p.x, p.y, 22));
   }
 
-  for (let i = 0; i < ammoCount; i += 1) {
+  for (let i = 0; i < manaCount; i += 1) {
     const p = pickPoint(i + currentLevel * 2 + 3);
-    pickups.push(createPickupModel("ammo", i, p.x, p.y, 10));
+    pickups.push(createPickupModel("mana", i, p.x, p.y, 50));
   }
 
   for (let i = 0; i < grenadeCount; i += 1) {
@@ -1607,7 +1611,7 @@ function startLevel(levelIndex: number, freshRun = false): void {
 
   if (!freshRun) {
     health = Math.min(maxHealth, health + 18);
-    ammo = Math.min(200, ammo + 16);
+    mana = Math.min(MAX_MANA, mana + 16);
   }
 
   if (portalMesh) portalMesh.isVisible = false;
@@ -1617,7 +1621,7 @@ function startLevel(levelIndex: number, freshRun = false): void {
 
 function resetRun(): void {
   health = maxHealth;
-  ammo = 60;
+  mana = 60;
   grenades = 1;
   smokeGrenades = 2;
   stamina = MAX_STAMINA;
@@ -1664,7 +1668,7 @@ function killEnemy(enemy: EnemyEntity): void {
   if (enemy.type === "boss") {
     hasCannon = true;
     weaponMode = "cannon";
-    ammo = Math.min(220, ammo + 35);
+    mana = Math.min(MAX_MANA, mana + 35);
   }
 }
 
@@ -1712,8 +1716,8 @@ function fireWeapon(): void {
   if (gameOver || victory) return;
 
   if (multiplayerSync) {
-    if (ammo < 1) return;
-    ammo -= 1;
+    if (mana < 2) return;
+    mana -= 2;
     fireCooldown = 0.22;
     recoil = 0.1;
     playGunSound();
@@ -1751,23 +1755,23 @@ function fireWeapon(): void {
     updateHud();
     return;
   } else if (weaponMode === "cannon") {
-    if (ammo < 2) return;
-    ammo -= 2;
+    if (mana < 2) return;
+    mana -= 2;
     fireCooldown = 0.58;
     damage = 4;
     splash = 2.2;
     recoil = 0.17;
     playCannonSound();
   } else if (weaponMode === "minigun") {
-    if (ammo < 1) return;
-    ammo -= 1;
+    if (mana < 2) return;
+    mana -= 2;
     fireCooldown = 0.055;
     damage = 1;
     recoil = 0.04;
     playGunSound();
   } else {
-    if (ammo < 1) return;
-    ammo -= 1;
+    if (mana < 2) return;
+    mana -= 2;
     fireCooldown = 0.18;
     damage = 1;
     recoil = 0.09;
@@ -2638,8 +2642,8 @@ function updatePickups(dt: number): void {
     if (p.kind === "health") {
       if (health >= maxHealth) continue;
       health = Math.min(maxHealth, health + p.amount);
-    } else if (p.kind === "ammo") {
-      ammo = Math.min(220, ammo + p.amount);
+    } else if (p.kind === "mana") {
+      mana = Math.min(MAX_MANA, mana + p.amount);
     } else if (p.kind === "grenade") {
       grenades = Math.min(3, grenades + p.amount);
     } else {
@@ -2751,6 +2755,9 @@ function updatePlayer(dt: number): void {
 
   if (fireCooldown > 0) fireCooldown -= dt;
   if (grenadeCooldown > 0) grenadeCooldown -= dt;
+  if (!multiplayerSync && !gameOver && !victory) {
+    mana = Math.min(MAX_MANA, mana + MANA_RECOVER_PER_SEC * dt);
+  }
   const flameActive = weaponMode === "flamethrower" && input.MouseLeft && !cheatOpen && flameFuel > 0;
   updateFlameStreamVisual(flameActive);
   if (input.MouseLeft && !cheatOpen && fireCooldown <= 0) fireWeapon();
@@ -2825,7 +2832,7 @@ function runCheat(raw: string): void {
   if (cheat === "meow") {
     hasMinigun = true;
     weaponMode = "minigun";
-    ammo = Math.min(240, ammo + 100);
+    mana = Math.min(MAX_MANA, mana + 100);
     setCheatStatus("Minigun unlocked");
     addCheatHistory("meow", "minigun");
     updateHud();
@@ -2852,12 +2859,12 @@ function runCheat(raw: string): void {
 
   if (cheat === "catnip") {
     health = maxHealth;
-    ammo = 220;
+    mana = MAX_MANA;
     grenades = 3;
     smokeGrenades = 2;
     stamina = MAX_STAMINA;
     sprintExhausted = false;
-    setCheatStatus("Health and ammo maxed");
+    setCheatStatus("Health and mana maxed");
     addCheatHistory("catnip", "restored");
     updateHud();
     return;
@@ -3065,7 +3072,7 @@ function syncMultiplayerPose(now: number): void {
       z: camera.position.z,
       rotY: yaw,
       hp: Math.max(0, Math.floor(health)),
-      ammo: Math.max(0, Math.floor(ammo)),
+      mana: Math.max(0, Math.floor(mana)),
     });
   } catch (error) {
     console.error("Multiplayer pose sync failed", error);
@@ -3077,7 +3084,7 @@ function syncMultiplayerVitals(): void {
   const vitals = multiplayerSync.getSelfVitals();
   const transform = multiplayerSync.getSelfTransform();
   health = Math.max(0, Math.min(maxHealth, vitals.hp));
-  ammo = Math.max(0, Math.floor(vitals.ammo));
+  mana = Math.max(0, Math.min(MAX_MANA, Math.floor(vitals.mana)));
   multiplayerRespawnSeconds = Math.max(0, Math.ceil(vitals.respawnIn));
   if (multiplayerRespawnSeconds > 0) {
     gameOver = true;

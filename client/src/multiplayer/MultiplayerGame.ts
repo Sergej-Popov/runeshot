@@ -1,4 +1,4 @@
-import { canvas } from "../dom";
+﻿import { canvas } from "../dom";
 import { initAudio } from "../audio";
 import { InputController } from "./input/InputController";
 import { NetworkSession } from "./net/NetworkSession";
@@ -26,7 +26,7 @@ export class MultiplayerGame {
       const self = this.players.get(this.session.sessionId);
       this.hud.update({
         health: Math.floor(self?.hp ?? 100),
-        ammo: Math.floor(self?.ammo ?? 0),
+        mana: Math.floor(self?.mana ?? 0),
         playersOnline: this.players.size,
         status: this.connectionStatus,
       });

@@ -1,4 +1,4 @@
-import http from "node:http";
+﻿import http from "node:http";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { Server } from "colyseus";
@@ -12,7 +12,7 @@ type SchemaPlayer = {
   y: number;
   z: number;
   hp: number;
-  ammo: number;
+  mana: number;
   respawnIn: number;
 };
 
@@ -152,7 +152,8 @@ describe("BattleRoom", () => {
     expect(self).toBeTruthy();
     expect(self?.name).toBe("Tester");
     expect(self?.hp).toBe(100);
-    expect(self?.ammo).toBe(90);
+    expect(self?.mana).toBeGreaterThanOrEqual(90);
+    expect(self?.mana).toBeLessThanOrEqual(220);
 
     await room.leave();
   });
@@ -220,11 +221,11 @@ describe("BattleRoom", () => {
       return Math.abs(current.x - initialX) > 0.05 || Math.abs(current.z - initialZ) > 0.05;
     });
 
-    room.send("pose", { x: 999, y: 99, z: -999, hp: 250, ammo: 2000 });
+    room.send("pose", { x: 999, y: 99, z: -999, hp: 250, mana: 2000 });
     await waitFor(() => {
       const current = getPlayers(room)?.get(room.sessionId);
       if (!current) return false;
-      return current.x <= 15 && current.y <= 8 && current.z >= -15 && current.hp <= 100 && current.ammo <= 999;
+      return current.x <= 15 && current.y <= 8 && current.z >= -15 && current.hp <= 100 && current.mana <= 999;
     });
 
     const clamped = getPlayers(room)?.get(room.sessionId);
@@ -232,7 +233,7 @@ describe("BattleRoom", () => {
     expect(clamped?.y).toBeLessThanOrEqual(8);
     expect(clamped?.z).toBeGreaterThanOrEqual(-15);
     expect(clamped?.hp).toBeLessThanOrEqual(100);
-    expect(clamped?.ammo).toBeLessThanOrEqual(999);
+    expect(clamped?.mana).toBeLessThanOrEqual(999);
 
     await room.leave();
   });
@@ -371,7 +372,7 @@ describe("BattleRoom", () => {
     await targetRoom.leave();
   }, 15000);
 
-  it("collects server-authoritative ammo pickup", async () => {
+  it("collects server-authoritative mana pickup", async () => {
     const client = new Client(wsUrl);
     const room = await client.joinOrCreate<TestRoomState>("battle", {
       name: "LootTester",
@@ -385,14 +386,15 @@ describe("BattleRoom", () => {
       return Boolean(pickups && pickups.size > 0);
     });
 
-    const ammoPickupEntry = Array.from(getPickups(room)?.entries() ?? []).find(([, p]) => p.kind === "ammo");
-    if (!ammoPickupEntry) throw new Error("Missing ammo pickup in room state");
-    const [pickupId, pickup] = ammoPickupEntry;
+    const manaPickupEntry = Array.from(getPickups(room)?.entries() ?? []).find(([, p]) => p.kind === "mana");
+    if (!manaPickupEntry) throw new Error("Missing mana pickup in room state");
+    const [pickupId, pickup] = manaPickupEntry;
+    const beforeShootMana = getPlayers(room)?.get(room.sessionId)?.mana ?? 90;
 
     room.send("shoot", { dirX: 0, dirY: 1, dirZ: 0 });
     await waitFor(() => {
       const self = getPlayers(room)?.get(room.sessionId);
-      return Boolean(self && self.ammo === 89);
+      return Boolean(self && self.mana < beforeShootMana);
     });
 
     room.send("pose", { x: pickup.x, y: pickup.y, z: pickup.z, rotY: 0 });
@@ -401,7 +403,7 @@ describe("BattleRoom", () => {
       const self = getPlayers(room)?.get(room.sessionId);
       const pickups = getPickups(room);
       if (!self || !pickups) return false;
-      return self.ammo > 89 && !pickups.has(pickupId);
+      return self.mana > beforeShootMana - 2 && !pickups.has(pickupId);
     }, 4000);
 
     await room.leave();

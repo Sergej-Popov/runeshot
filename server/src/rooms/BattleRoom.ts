@@ -1,4 +1,4 @@
-import { Client, Room } from "colyseus";
+﻿import { Client, Room } from "colyseus";
 import { BattleState, Cat, Pickup, Player, Projectile } from "../state/BattleState.js";
 
 const ARENA_HALF_SIZE = 15;
@@ -57,7 +57,8 @@ const PICKUP_MAP_POINTS = [
   { x: 12.2, y: 7.8 },
 ];
 const PICKUP_RADIUS = 0.95;
-const MAX_PLAYER_AMMO = 200;
+const MAX_PLAYER_MANA = 220;
+const MANA_RECOVER_PER_SEC = 0.75;
 const PORTAL_ACTIVATE_RADIUS = 1.4;
 const CAT_SPAWN_MAP_POINTS = [
   { x: 2.6, y: 2.6 },
@@ -96,7 +97,7 @@ type PlayerPose = {
   z: number;
   rotY: number;
   hp: number;
-  ammo: number;
+  mana: number;
 };
 
 type ShootPayload = {
@@ -243,6 +244,11 @@ export class BattleRoom extends Room<BattleState> {
     for (const [sessionId, cooldown] of this.fireCooldowns.entries()) {
       this.fireCooldowns.set(sessionId, Math.max(0, cooldown - dt));
     }
+
+    for (const player of this.state.players.values()) {
+      if (player.hp <= 0) continue;
+      player.mana = Math.min(MAX_PLAYER_MANA, player.mana + MANA_RECOVER_PER_SEC * dt);
+    }
   }
 
   private stepPlayers(dt: number): void {
@@ -276,9 +282,9 @@ export class BattleRoom extends Room<BattleState> {
 
   private tryShoot(shooterId: string, shooter: Player, payload?: Partial<ShootPayload>): void {
     const cooldown = this.fireCooldowns.get(shooterId) ?? 0;
-    if (cooldown > 0 || shooter.ammo <= 0) return;
+    if (cooldown > 0 || shooter.mana < 2) return;
 
-    shooter.ammo = Math.max(0, shooter.ammo - 1);
+    shooter.mana = Math.max(0, shooter.mana - 2);
     this.fireCooldowns.set(shooterId, FIRE_COOLDOWN);
 
     const fallbackX = Math.sin(shooter.rotY);
@@ -304,7 +310,7 @@ export class BattleRoom extends Room<BattleState> {
       PROJECTILE_DAMAGE,
     );
     this.state.projectiles.set(projectileId, projectile);
-    this.debug("projectile spawn", { shooterId, projectileId, ammo: shooter.ammo });
+    this.debug("projectile spawn", { shooterId, projectileId, mana: shooter.mana });
   }
 
   private logTrafficIfNeeded(): void {
@@ -656,7 +662,7 @@ export class BattleRoom extends Room<BattleState> {
     player.y = spawn.y;
     player.z = spawn.z;
     player.hp = 100;
-    player.ammo = 90;
+    player.mana = 90;
     player.respawnIn = 0;
     this.respawnAt.delete(sessionId);
     this.debug("respawn", { sessionId });
@@ -708,7 +714,7 @@ export class BattleRoom extends Room<BattleState> {
       roomPlayer.respawnIn = 0;
       if (roomPlayer.hp <= 0) {
         roomPlayer.hp = 100;
-        roomPlayer.ammo = Math.max(roomPlayer.ammo, 90);
+        roomPlayer.mana = Math.max(roomPlayer.mana, 90);
       }
       this.respawnAt.delete(sessionId);
     }
@@ -744,7 +750,7 @@ export class BattleRoom extends Room<BattleState> {
 
   private seedPickups(): void {
     const healthCount = Math.max(2, 3 + Math.floor(this.roomLevel / 2) + (this.roomLevel === 3 ? 2 : 0));
-    const ammoCount = 4;
+    const manaCount = 4;
 
     for (let i = 0; i < healthCount; i += 1) {
       const point = PICKUP_MAP_POINTS[(i + this.roomLevel) % PICKUP_MAP_POINTS.length];
@@ -752,10 +758,10 @@ export class BattleRoom extends Room<BattleState> {
       this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("health", world.x, world.y, world.z, 22));
     }
 
-    for (let i = 0; i < ammoCount; i += 1) {
+    for (let i = 0; i < manaCount; i += 1) {
       const point = PICKUP_MAP_POINTS[(i + this.roomLevel * 2 + 3) % PICKUP_MAP_POINTS.length];
       const world = this.mapToWorld(point.x, point.y, 0.4);
-      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("ammo", world.x, world.y, world.z, 10));
+      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("mana", world.x, world.y, world.z, 50));
     }
 
     this.debug("pickups seeded", { pickups: this.state.pickups.size });
@@ -792,9 +798,9 @@ export class BattleRoom extends Room<BattleState> {
       return true;
     }
 
-    if (pickup.kind === "ammo") {
-      if (player.ammo >= MAX_PLAYER_AMMO) return false;
-      player.ammo = Math.min(MAX_PLAYER_AMMO, player.ammo + pickup.amount);
+    if (pickup.kind === "mana") {
+      if (player.mana >= MAX_PLAYER_MANA) return false;
+      player.mana = Math.min(MAX_PLAYER_MANA, player.mana + pickup.amount);
       return true;
     }
 

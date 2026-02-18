@@ -1,4 +1,4 @@
-import { MapSchema, Schema, type } from "@colyseus/schema";
+﻿import { MapSchema, Schema, type } from "@colyseus/schema";
 
 export class Player extends Schema {
   @type("string") declare name: string;
@@ -7,7 +7,7 @@ export class Player extends Schema {
   @type("number") declare z: number;
   @type("number") declare rotY: number;
   @type("number") declare hp: number;
-  @type("number") declare ammo: number;
+  @type("number") declare mana: number;
   @type("number") declare respawnIn: number;
 
   constructor(name: string, x: number, y: number, z: number) {
@@ -18,7 +18,7 @@ export class Player extends Schema {
     this.z = z;
     this.rotY = 0;
     this.hp = 100;
-    this.ammo = 90;
+    this.mana = 90;
     this.respawnIn = 0;
   }
 }

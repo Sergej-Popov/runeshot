@@ -1,4 +1,4 @@
-function requiredById<T extends HTMLElement>(id: string): T {
+﻿function requiredById<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
   if (!el) throw new Error(`Missing required element #${id}`);
   return el as T;
@@ -13,8 +13,9 @@ export const healthTextEl = requiredById<HTMLElement>("healthText");
 export const healthBarEl = requiredById<HTMLElement>("healthBar");
 export const staminaTextEl = requiredById<HTMLElement>("staminaText");
 export const staminaBarEl = requiredById<HTMLElement>("staminaBar");
+export const manaTextEl = requiredById<HTMLElement>("manaText");
+export const manaBarEl = requiredById<HTMLElement>("manaBar");
 export const levelEl = requiredById<HTMLElement>("level");
-export const ammoEl = requiredById<HTMLElement>("ammo");
 export const grenadesEl = requiredById<HTMLElement>("grenades");
 export const smokeGrenadesEl = requiredById<HTMLElement>("smokeGrenades");
 export const weaponEl = requiredById<HTMLElement>("weapon");

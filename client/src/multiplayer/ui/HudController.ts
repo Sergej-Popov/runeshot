@@ -1,5 +1,4 @@
-import {
-  ammoEl,
+﻿import {
   bossHudEl,
   enemyEl,
   grenadeChargeHudEl,
@@ -7,6 +6,8 @@ import {
   healthBarEl,
   healthTextEl,
   levelEl,
+  manaBarEl,
+  manaTextEl,
   smokeGrenadesEl,
   staminaBarEl,
   staminaTextEl,
@@ -15,10 +16,12 @@ import {
 
 type HudState = {
   health: number;
-  ammo: number;
+  mana: number;
   playersOnline: number;
   status: string;
 };
+
+const MAX_MANA = 220;
 
 export class HudController {
   update(state: HudState): void {
@@ -28,8 +31,10 @@ export class HudController {
     staminaTextEl.textContent = "Stamina: Server";
     staminaBarEl.style.width = "100%";
 
+    manaTextEl.textContent = `Mana: ${state.mana}/${MAX_MANA}`;
+    manaBarEl.style.width = `${Math.max(0, Math.min(100, (state.mana / MAX_MANA) * 100))}%`;
+
     levelEl.textContent = "Mode: Multiplayer";
-    ammoEl.textContent = `Ammo: ${state.ammo}`;
     grenadesEl.textContent = "Grenades: Disabled";
     smokeGrenadesEl.textContent = "Smoke: Disabled";
     weaponEl.textContent = "Weapon: Carbine";
