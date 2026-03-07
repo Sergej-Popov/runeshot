@@ -6,7 +6,6 @@ import {
   Mesh,
   MeshBuilder,
   ParticleSystem,
-  PointLight,
   Scene,
   StandardMaterial,
   Texture,
@@ -14,15 +13,14 @@ import {
 } from "@babylonjs/core";
 import { POTION_SPRITE_TEXTURE_URLS } from "./potionSprites";
 
-export type PickupVisualKind = "health" | "mana" | "grenade" | "flame";
-type PickupSpriteKind = "health" | "mana" | "smoke" | "fire";
+export type PickupVisualKind = "health" | "mana" | "flame" | "poison" | "speed" | "freeze";
+type PickupSpriteKind = "health" | "mana" | "smoke" | "fire" | "poison" | "speed" | "freeze";
 
 export type PickupVisual = {
   mesh: Mesh;
   haloA: Mesh;
   haloB: Mesh;
   glow: Mesh;
-  light: PointLight;
   systems: ParticleSystem[];
   baseY: number;
   phase: number;
@@ -33,6 +31,9 @@ type PickupVisualResources = {
   auraHealthMat: StandardMaterial;
   auraManaMat: StandardMaterial;
   auraFlameMat: StandardMaterial;
+  auraPoisonMat: StandardMaterial;
+  auraSpeedMat: StandardMaterial;
+  auraFreezeMat: StandardMaterial;
   smokeParticleTex: DynamicTexture;
   fireParticleTex: DynamicTexture;
 };
@@ -42,7 +43,9 @@ const resourceCache = new WeakMap<Scene, PickupVisualResources>();
 function pickupSpriteForKind(kind: PickupVisualKind): PickupSpriteKind {
   if (kind === "health") return "health";
   if (kind === "mana") return "mana";
-  if (kind === "grenade") return "smoke";
+  if (kind === "poison") return "poison";
+  if (kind === "speed") return "speed";
+  if (kind === "freeze") return "freeze";
   return "fire";
 }
 
@@ -117,16 +120,37 @@ function getResources(scene: Scene): PickupVisualResources {
   auraFlameMat.diffuseColor = new Color3(0.35, 0.12, 0.07);
   auraFlameMat.alpha = 0.28;
 
+  const auraPoisonMat = new StandardMaterial("pickup-aura-poison", scene);
+  auraPoisonMat.emissiveColor = new Color3(0.7, 0.28, 1.0);
+  auraPoisonMat.diffuseColor = new Color3(0.28, 0.1, 0.35);
+  auraPoisonMat.alpha = 0.26;
+
+  const auraSpeedMat = new StandardMaterial("pickup-aura-speed", scene);
+  auraSpeedMat.emissiveColor = new Color3(1.0, 0.92, 0.3);
+  auraSpeedMat.diffuseColor = new Color3(0.35, 0.32, 0.1);
+  auraSpeedMat.alpha = 0.26;
+
+  const auraFreezeMat = new StandardMaterial("pickup-aura-freeze", scene);
+  auraFreezeMat.emissiveColor = new Color3(0.45, 0.85, 1.0);
+  auraFreezeMat.diffuseColor = new Color3(0.12, 0.28, 0.38);
+  auraFreezeMat.alpha = 0.26;
+
   const resources: PickupVisualResources = {
     potionMats: {
       health: createPotionMaterial(scene, "health"),
       mana: createPotionMaterial(scene, "mana"),
       smoke: createPotionMaterial(scene, "smoke"),
       fire: createPotionMaterial(scene, "fire"),
+      poison: createPotionMaterial(scene, "poison"),
+      speed: createPotionMaterial(scene, "speed"),
+      freeze: createPotionMaterial(scene, "freeze"),
     },
     auraHealthMat,
     auraManaMat,
     auraFlameMat,
+    auraPoisonMat,
+    auraSpeedMat,
+    auraFreezeMat,
     smokeParticleTex: createSmokeParticleTexture(scene),
     fireParticleTex: createFireParticleTexture(scene),
   };
@@ -135,7 +159,7 @@ function getResources(scene: Scene): PickupVisualResources {
 }
 
 export function normalizePickupVisualKind(kind: string): PickupVisualKind {
-  if (kind === "health" || kind === "mana" || kind === "grenade" || kind === "flame") return kind;
+  if (kind === "health" || kind === "mana" || kind === "flame" || kind === "poison" || kind === "speed" || kind === "freeze") return kind;
   return "mana";
 }
 
@@ -162,7 +186,13 @@ export function createPickupVisual(
     ? resources.auraHealthMat
     : kind === "mana"
       ? resources.auraManaMat
-      : resources.auraFlameMat;
+      : kind === "poison"
+        ? resources.auraPoisonMat
+        : kind === "speed"
+          ? resources.auraSpeedMat
+          : kind === "freeze"
+            ? resources.auraFreezeMat
+            : resources.auraFlameMat;
 
   const haloA = MeshBuilder.CreateTorus(`pickup-aura-a-${id}`, { diameter: 1.1, thickness: 0.045, tessellation: 24 }, scene);
   haloA.parent = root;
@@ -182,27 +212,28 @@ export function createPickupVisual(
   glow.parent = root;
   glow.material = auraMat;
 
-  const light = new PointLight(`pickup-light-${id}`, root.position.clone(), scene);
-  light.parent = root;
-  light.diffuse = kind === "health"
-    ? new Color3(0.42, 1.0, 0.6)
-    : kind === "mana"
-      ? new Color3(0.32, 0.78, 1.0)
-      : new Color3(1.0, 0.5, 0.2);
-  light.specular = light.diffuse.scale(0.8);
-  light.intensity = 1.26;
-  light.range = 6.5;
-
   const auraColorA = kind === "health"
     ? new Color4(0.48, 1.0, 0.65, 0.42)
     : kind === "mana"
       ? new Color4(0.4, 0.9, 1.0, 0.4)
-      : new Color4(1.0, 0.56, 0.2, 0.44);
+      : kind === "poison"
+        ? new Color4(0.65, 0.28, 1.0, 0.42)
+        : kind === "speed"
+          ? new Color4(1.0, 0.92, 0.3, 0.42)
+          : kind === "freeze"
+            ? new Color4(0.42, 0.85, 1.0, 0.42)
+            : new Color4(1.0, 0.56, 0.2, 0.44);
   const auraColorB = kind === "health"
     ? new Color4(0.2, 0.8, 0.45, 0.2)
     : kind === "mana"
       ? new Color4(0.2, 0.55, 0.9, 0.2)
-      : new Color4(0.62, 0.24, 0.08, 0.22);
+      : kind === "poison"
+        ? new Color4(0.35, 0.1, 0.6, 0.22)
+        : kind === "speed"
+          ? new Color4(0.6, 0.55, 0.1, 0.22)
+          : kind === "freeze"
+            ? new Color4(0.2, 0.5, 0.75, 0.22)
+            : new Color4(0.62, 0.24, 0.08, 0.22);
 
   const auraSpark = new ParticleSystem(`pickup-aura-${id}`, 260, scene);
   auraSpark.particleTexture = resources.smokeParticleTex;
@@ -278,7 +309,6 @@ export function createPickupVisual(
     haloA,
     haloB,
     glow,
-    light,
     systems,
     baseY: root.position.y,
     phase: Math.random() * Math.PI * 2,
@@ -292,7 +322,6 @@ export function animatePickupVisual(visual: PickupVisual, timeSeconds: number): 
   visual.haloB.rotation.x = p * 1.3;
   const pulse = 0.92 + (Math.sin(p * 3.2) * 0.5 + 0.5) * 0.16;
   visual.glow.scaling.setAll(pulse);
-  visual.light.intensity = 1.08 + (Math.sin(p * 4) * 0.5 + 0.5) * 0.56;
 
   const pulseRateA = 47 + Math.sin(p * 3.4) * 12;
   const pulseRateB = 18 + Math.sin(p * 2.2 + 1.2) * 5;
@@ -303,8 +332,7 @@ export function animatePickupVisual(visual: PickupVisual, timeSeconds: number): 
 export function disposePickupVisual(visual: PickupVisual): void {
   for (const system of visual.systems) {
     system.stop();
-    system.dispose();
+    system.dispose(false);
   }
-  visual.light.dispose();
   visual.mesh.dispose();
 }

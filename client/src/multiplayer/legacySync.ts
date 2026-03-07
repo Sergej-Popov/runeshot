@@ -3,8 +3,11 @@ import {
   AssetContainer,
   AnimationGroup,
   Color3,
+  Color4,
+  DynamicTexture,
   Mesh,
   MeshBuilder,
+  ParticleSystem,
   Scene,
   SceneLoader,
   StandardMaterial,
@@ -25,6 +28,14 @@ type SchemaPlayer = {
   hp: number;
   mana: number;
   respawnIn: number;
+  potionHealth: number;
+  potionMana: number;
+  potionPoison: number;
+  potionSpeed: number;
+  potionFreeze: number;
+  poisoned: boolean;
+  speedBoosted: boolean;
+  frozen: boolean;
 };
 
 type SchemaCat = {
@@ -55,6 +66,13 @@ type SchemaPickup = {
   amount: number;
 };
 
+type SchemaPoisonCloud = {
+  x: number;
+  y: number;
+  z: number;
+  life: number;
+};
+
 type PlayerMapSchema = {
   forEach: (cb: (player: SchemaPlayer, key: string) => void) => void;
 };
@@ -71,11 +89,16 @@ type PickupMapSchema = {
   forEach: (cb: (pickup: SchemaPickup, key: string) => void) => void;
 };
 
+type PoisonCloudMapSchema = {
+  forEach: (cb: (cloud: SchemaPoisonCloud, key: string) => void) => void;
+};
+
 type BattleStateSchema = {
   players: PlayerMapSchema;
   cats?: CatMapSchema;
   projectiles?: ProjectileMapSchema;
   pickups?: PickupMapSchema;
+  clouds?: PoisonCloudMapSchema;
   level?: number;
   portalActive?: boolean;
 };
@@ -114,6 +137,7 @@ type CatVisual = {
 
 type ProjectileVisual = {
   mesh: Mesh;
+  trail: ParticleSystem;
 };
 
 export type ServerDebugInfo = {
@@ -173,6 +197,15 @@ export class LegacyMultiplayerSync {
   private selfHp = 100;
   private selfMana = 90;
   private selfRespawnIn = 0;
+  private selfPotionHealth = 0;
+  private selfPotionMana = 0;
+  private selfPotionPoison = 0;
+  private selfPotionSpeed = 0;
+  private selfPotionFreeze = 0;
+  private selfPoisoned = false;
+  private selfSpeedBoosted = false;
+  private selfFrozen = false;
+  private readonly poisonCloudPositions = new Map<string, { x: number; y: number; z: number; life: number }>();
   private selfX = 0;
   private selfY = 1;
   private selfZ = 0;
@@ -188,6 +221,9 @@ export class LegacyMultiplayerSync {
   private readonly levelIndex = getLevelIndex();
   private readonly serverUrl = getServerUrl();
   private lastStatus = "Idle";
+  private fireParticleTex: DynamicTexture | null = null;
+
+  onProjectileRemoved: ((position: Vector3) => void) | null = null;
 
   constructor(private readonly scene: Scene, private readonly setStatus: (status: string) => void) {
     this.serverLevel = this.levelIndex;
@@ -255,6 +291,40 @@ export class LegacyMultiplayerSync {
     if (now - this.lastPortalEnterRequestAt < 350) return;
     this.lastPortalEnterRequestAt = now;
     this.room.send("enterPortal");
+  }
+
+  sendUsePotion(kind: string, targetX?: number, targetZ?: number): void {
+    if (!this.room || !this.connected) return;
+    const payload: { kind: string; targetX?: number; targetZ?: number } = { kind };
+    if (targetX !== undefined) payload.targetX = targetX;
+    if (targetZ !== undefined) payload.targetZ = targetZ;
+    this.room.send("usePotion", payload);
+  }
+
+  getPotionInventory(): { health: number; mana: number; poison: number; speed: number; freeze: number } {
+    return {
+      health: this.selfPotionHealth,
+      mana: this.selfPotionMana,
+      poison: this.selfPotionPoison,
+      speed: this.selfPotionSpeed,
+      freeze: this.selfPotionFreeze,
+    };
+  }
+
+  isSelfPoisoned(): boolean {
+    return this.selfPoisoned;
+  }
+
+  isSelfSpeedBoosted(): boolean {
+    return this.selfSpeedBoosted;
+  }
+
+  isSelfFrozen(): boolean {
+    return this.selfFrozen;
+  }
+
+  getPoisonCloudPositions(): Map<string, { x: number; y: number; z: number; life: number }> {
+    return this.poisonCloudPositions;
   }
 
   getDebugInfo(): ServerDebugInfo {
@@ -332,8 +402,12 @@ export class LegacyMultiplayerSync {
     this.lastStatus = reason;
     for (const sessionId of this.remotes.keys()) this.removeRemote(sessionId);
     for (const catId of this.catVisuals.keys()) this.removeCat(catId);
-    for (const projectileId of this.projectileVisuals.keys()) this.removeProjectile(projectileId);
+    for (const projectileId of this.projectileVisuals.keys()) this.removeProjectile(projectileId, true);
     for (const pickupId of this.pickupVisuals.keys()) this.removePickup(pickupId);
+    this.poisonCloudPositions.clear();
+    this.selfPoisoned = false;
+    this.selfSpeedBoosted = false;
+    this.selfFrozen = false;
     this.setStatus(`Multiplayer: ${reason}`);
     this.debug("Disconnected", { reason });
     this.scheduleReconnect();
@@ -444,6 +518,14 @@ export class LegacyMultiplayerSync {
         this.selfHp = player.hp;
         this.selfMana = player.mana;
         this.selfRespawnIn = player.respawnIn;
+        this.selfPotionHealth = player.potionHealth ?? 0;
+        this.selfPotionMana = player.potionMana ?? 0;
+        this.selfPotionPoison = player.potionPoison ?? 0;
+        this.selfPotionSpeed = player.potionSpeed ?? 0;
+        this.selfPotionFreeze = player.potionFreeze ?? 0;
+        this.selfPoisoned = Boolean(player.poisoned);
+        this.selfSpeedBoosted = Boolean(player.speedBoosted);
+        this.selfFrozen = Boolean(player.frozen);
         return;
       }
       seen.add(sessionId);
@@ -459,6 +541,7 @@ export class LegacyMultiplayerSync {
     this.syncCatsFromState(room);
     this.syncProjectilesFromState(room);
     this.syncPickupsFromState(room);
+    this.syncPoisonCloudsFromState(room);
   }
 
   private syncCatsFromState(room: Room<BattleStateSchema>): void {
@@ -617,29 +700,74 @@ export class LegacyMultiplayerSync {
   private upsertProjectile(projectileId: string, projectile: SchemaProjectile): void {
     let visual = this.projectileVisuals.get(projectileId);
     if (!visual) {
+      // --- Glowing fireball sphere ---
       const mesh = MeshBuilder.CreateSphere(
         `server-projectile-${projectileId}`,
-        {
-          diameter: 0.28,
-          segments: 10,
-        },
+        { diameter: 0.32, segments: 10 },
         this.scene,
       );
       const mat = new StandardMaterial(`server-projectile-mat-${projectileId}`, this.scene);
-      mat.diffuseColor = new Color3(1.0, 0.45, 0.12);
-      mat.emissiveColor = new Color3(1.0, 0.35, 0.08);
+      mat.diffuseColor = new Color3(1.0, 0.55, 0.15);
+      mat.emissiveColor = new Color3(1.0, 0.45, 0.12);
+      mat.specularColor = new Color3(0.6, 0.3, 0.05);
+      mat.alpha = 0.92;
       mesh.material = mat;
-      visual = { mesh };
+
+      // --- Fire particle trail ---
+      const tex = this.getFireParticleTex();
+      const trail = new ParticleSystem(`server-projectile-trail-${projectileId}`, 300, this.scene);
+      trail.particleTexture = tex;
+      trail.emitter = mesh;
+      trail.minEmitBox = new Vector3(-0.04, -0.04, -0.04);
+      trail.maxEmitBox = new Vector3(0.04, 0.04, 0.04);
+      trail.color1 = new Color4(1.0, 0.82, 0.35, 1.0);
+      trail.color2 = new Color4(1.0, 0.4, 0.1, 0.85);
+      trail.colorDead = new Color4(0.25, 0.06, 0.01, 0.0);
+      trail.minSize = 0.1;
+      trail.maxSize = 0.34;
+      trail.minLifeTime = 0.08;
+      trail.maxLifeTime = 0.28;
+      trail.emitRate = 180;
+      trail.blendMode = ParticleSystem.BLENDMODE_ONEONE;
+      trail.gravity = new Vector3(0, -0.6, 0);
+      trail.direction1 = new Vector3(-0.4, -0.2, -0.4);
+      trail.direction2 = new Vector3(0.4, 0.3, 0.4);
+      trail.minEmitPower = 0.3;
+      trail.maxEmitPower = 1.2;
+      trail.updateSpeed = 0.015;
+      trail.start();
+
+      visual = { mesh, trail };
       this.projectileVisuals.set(projectileId, visual);
     }
     visual.mesh.position.copyFrom(new Vector3(projectile.x, projectile.y, projectile.z));
   }
 
-  private removeProjectile(projectileId: string): void {
+  private removeProjectile(projectileId: string, silent = false): void {
     const visual = this.projectileVisuals.get(projectileId);
     if (!visual) return;
+    const lastPos = visual.mesh.position.clone();
+    visual.trail.stop();
+    visual.trail.dispose(false);
     visual.mesh.dispose();
     this.projectileVisuals.delete(projectileId);
+    if (!silent) this.onProjectileRemoved?.(lastPos);
+  }
+
+  private getFireParticleTex(): DynamicTexture {
+    if (this.fireParticleTex) return this.fireParticleTex;
+    const tex = new DynamicTexture("server-fire-particle-tex", { width: 128, height: 128 }, this.scene, false);
+    const ctx = tex.getContext();
+    const grad = ctx.createRadialGradient(64, 64, 4, 64, 64, 62);
+    grad.addColorStop(0, "rgba(255,255,230,1)");
+    grad.addColorStop(0.22, "rgba(255,190,80,0.95)");
+    grad.addColorStop(0.55, "rgba(255,95,25,0.7)");
+    grad.addColorStop(1, "rgba(40,10,0,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, 128, 128);
+    tex.update(false);
+    this.fireParticleTex = tex;
+    return tex;
   }
 
   private syncPickupsFromState(room: Room<BattleStateSchema>): void {
@@ -674,6 +802,23 @@ export class LegacyMultiplayerSync {
     if (!visual) return;
     disposePickupVisual(visual);
     this.pickupVisuals.delete(pickupId);
+  }
+
+  private syncPoisonCloudsFromState(room: Room<BattleStateSchema>): void {
+    const clouds = (room as { state?: { clouds?: PoisonCloudMapSchema } }).state?.clouds;
+    if (!clouds || typeof clouds.forEach !== "function") return;
+
+    const seen = new Set<string>();
+    clouds.forEach((cloud, cloudId) => {
+      seen.add(cloudId);
+      this.poisonCloudPositions.set(cloudId, { x: cloud.x, y: cloud.y, z: cloud.z, life: cloud.life });
+    });
+
+    for (const cloudId of this.poisonCloudPositions.keys()) {
+      if (!seen.has(cloudId)) {
+        this.poisonCloudPositions.delete(cloudId);
+      }
+    }
   }
 
   private animatePickups(): void {

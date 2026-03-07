@@ -88,12 +88,12 @@ function playTone({
   osc.stop(now + duration);
 }
 
-export function playGunSound(): void {
+export function playFireballSound(): void {
   playTone({ type: "square", startFreq: 170, endFreq: 70, duration: 0.08, gain: 0.09 });
   playTone({ startFreq: 1800, endFreq: 300, duration: 0.07, gain: 0.045, noise: true });
 }
 
-export function playCannonSound(): void {
+export function playLightningBoltSound(): void {
   playTone({ type: "sawtooth", startFreq: 130, endFreq: 55, duration: 0.16, gain: 0.1 });
   playTone({ startFreq: 1400, endFreq: 190, duration: 0.12, gain: 0.06, noise: true });
 }
@@ -127,18 +127,13 @@ export function playPickupSound(): void {
   playTone({ type: "triangle", startFreq: 920, endFreq: 1220, duration: 0.08, gain: 0.04 });
 }
 
-export function playGrenadeBounceSound(): void {
-  playTone({ type: "triangle", startFreq: 520, endFreq: 210, duration: 0.05, gain: 0.045 });
-  playTone({ startFreq: 1400, endFreq: 340, duration: 0.04, gain: 0.025, noise: true });
-}
-
-export function playGrenadeExplodeSound(): void {
+export function playImpactSound(): void {
   playTone({ type: "sawtooth", startFreq: 140, endFreq: 48, duration: 0.22, gain: 0.12 });
   playTone({ startFreq: 1700, endFreq: 120, duration: 0.2, gain: 0.09, noise: true });
   playTone({ type: "triangle", startFreq: 260, endFreq: 90, duration: 0.18, gain: 0.06 });
 }
 
-export function playFlamethrowerSound(): void {
+export function playInfernoSound(): void {
   playTone({ type: "sawtooth", startFreq: 210, endFreq: 160, duration: 0.09, gain: 0.045 });
   playTone({ startFreq: 1200, endFreq: 340, duration: 0.08, gain: 0.035, noise: true });
 }

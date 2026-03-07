@@ -35,9 +35,6 @@ import {
   cheatInputEl,
   cheatStatusEl,
   enemyEl,
-  grenadeChargeBarEl,
-  grenadeChargeHudEl,
-  grenadesEl,
   healthBarEl,
   healthTextEl,
   levelEl,
@@ -45,26 +42,27 @@ import {
   manaTextEl,
   minimapCtx,
   minimapEl,
+  runeEl,
   serverDebugAuthEl,
   serverDebugLobbyEl,
   serverDebugPlayersEl,
   serverDebugRoomEl,
   serverDebugStateEl,
   serverDebugUrlEl,
-  smokeGrenadesEl,
   staminaBarEl,
   staminaTextEl,
-  weaponEl,
+  potionSlotEls,
+  potionCountEls,
+  speedCooldownEl,
 } from "./dom";
 import {
   initAudio,
-  playCannonSound,
   playCatMeowSound,
   playEnemyDeathSound,
-  playFlamethrowerSound,
-  playGrenadeBounceSound,
-  playGrenadeExplodeSound,
-  playGunSound,
+  playFireballSound,
+  playImpactSound,
+  playInfernoSound,
+  playLightningBoltSound,
   playPickupSound,
   playPlayerDeathSound,
   playPortalSound,
@@ -85,7 +83,7 @@ import { SERVER_AUTHORITATIVE_ONLY } from "./game/featureFlags";
 import { animatePickupVisual, createPickupVisual, disposePickupVisual, type PickupVisual, type PickupVisualKind } from "./game/pickupVisuals";
 import { LegacyMultiplayerSync } from "./multiplayer/legacySync";
 
-type WeaponMode = "gun" | "cannon" | "minigun" | "flamethrower";
+type RuneMode = "fireball" | "lightning-bolt" | "ice-shard" | "inferno";
 type EnemyType = "normal" | "boss" | "kitten";
 
 type EnemyEntity = {
@@ -117,22 +115,22 @@ type EnemyShot = {
   damage: number;
 };
 
-type PickupKind = "health" | "mana" | "grenade" | "flame";
+type PickupKind = "health" | "mana" | "flame";
 type Pickup = {
   kind: PickupKind;
   amount: number;
   visual: PickupVisual;
 };
 
-type GrenadeProjectile = {
+type PotionProjectile = {
   mesh: Mesh;
   velocity: Vector3;
   life: number;
   bouncesRemaining: number;
-  kind: "explosive" | "smoke";
+  kind: "freeze";
 };
 
-type GrenadeBurst = {
+type ImpactBurst = {
   mesh: Mesh;
   light: PointLight;
   life: number;
@@ -143,14 +141,19 @@ type GrenadeBurst = {
   stopped: boolean;
 };
 
-type SmokeCloud = {
+type EffectCloud = {
   systems: ParticleSystem[];
   life: number;
   cleanupAt: number;
   stopped: boolean;
 };
 
-type FlameStream = {
+type PoisonCloudVisual = {
+  systems: ParticleSystem[];
+  light: PointLight;
+};
+
+type InfernoStream = {
   nozzle: Mesh;
   core: ParticleSystem;
   smoke: ParticleSystem;
@@ -188,7 +191,7 @@ const STAMINA_RECOVER_PER_SEC = 1;
 const STAMINA_RECOVER_UNLOCK = 1.5;
 const MAX_MANA = 220;
 const MANA_RECOVER_PER_SEC = 0.75;
-const FLAMETHROWER_MAX_FUEL = 220;
+const INFERNO_MAX_FUEL = 220;
 const PIT_DEPTH = PIT_FLOOR_HEIGHT;
 const MINIMAP_SIZES = [150, 190, 230];
 const TRAMPOLINE_RADIUS = TILE_SIZE * 0.27;
@@ -236,6 +239,7 @@ const input: InputState = {
 };
 
 const engine = new Engine(canvas, true);
+engine.disableUniformBuffers = true; // Bypass WebGL2 UBO limit (~12) — avoids shader failures when many PointLights exist
 const scene = new Scene(engine);
 scene.clearColor = new Color4(0.05, 0.06, 0.09, 1);
 
@@ -338,13 +342,6 @@ const portalMat = new StandardMaterial("portal", scene);
 portalMat.diffuseColor = new Color3(0.1, 0.6, 0.95);
 portalMat.emissiveColor = new Color3(0.1, 0.8, 1.0);
 
-const grenadeFlameMat = new StandardMaterial("grenade-flame", scene);
-grenadeFlameMat.emissiveColor = new Color3(1.0, 0.62, 0.2);
-grenadeFlameMat.diffuseColor = new Color3(0.78, 0.3, 0.08);
-const grenadeSmokeMat = new StandardMaterial("grenade-smoke", scene);
-grenadeSmokeMat.emissiveColor = new Color3(0.22, 0.16, 0.12);
-grenadeSmokeMat.diffuseColor = new Color3(0.18, 0.16, 0.15);
-grenadeSmokeMat.alpha = 0.5;
 const smokeParticleTex = new DynamicTexture("smoke-particle-tex", { width: 128, height: 128 }, scene, false);
 const smokeCtx = smokeParticleTex.getContext();
 const smokeGrad = smokeCtx.createRadialGradient(64, 64, 8, 64, 64, 62);
@@ -372,15 +369,17 @@ fireCtx.fillStyle = fireGrad;
 fireCtx.fillRect(0, 0, 128, 128);
 fireParticleTex.update(false);
 
+
+
 let levelMeshes: AbstractMesh[] = [];
 let wallMeshes: AbstractMesh[] = [];
 let enemies: EnemyEntity[] = [];
 let enemyShots: EnemyShot[] = [];
 let pickups: Pickup[] = [];
-let grenadeProjectiles: GrenadeProjectile[] = [];
-let grenadeBursts: GrenadeBurst[] = [];
-let smokeClouds: SmokeCloud[] = [];
-let flameStream: FlameStream | null = null;
+let potionProjectiles: PotionProjectile[] = [];
+let impactBursts: ImpactBurst[] = [];
+let effectClouds: EffectCloud[] = [];
+let infernoStream: InfernoStream | null = null;
 let enemyModelContainer: AssetContainer | null = null;
 let enemyModelHeight = 1;
 let enemyModelId = 0;
@@ -394,19 +393,17 @@ let currentLevel = 0;
 let health = 100;
 let maxHealth = 100;
 let mana = 60;
-let grenades = 1;
-let smokeGrenades = 2;
 let portalActive = false;
 let gameOver = false;
 let victory = false;
 let speedBoost = false;
 let godMode = false;
 let cheatOpen = false;
-let hasCannon = false;
-let hasMinigun = false;
-let hasFlamethrower = false;
-let flameFuel = 0;
-let weaponMode: WeaponMode = "gun";
+let hasLightningBolt = false;
+let hasIceShard = false;
+let hasInferno = false;
+let infernoFuel = 0;
+let runeMode: RuneMode = "fireball";
 let jumpQueued = false;
 let isGrounded = true;
 let verticalVelocity = 0;
@@ -414,8 +411,7 @@ let trampolineLock = false;
 let yaw = 0;
 let pitch = 0;
 let fireCooldown = 0;
-let grenadeCooldown = 0;
-let grenadeChargeStart = 0;
+let potionCooldown = 0;
 let pointerLocked = false;
 let safeSpawn = { x: 2.2, y: 2.2 };
 let lastTime = performance.now();
@@ -426,6 +422,18 @@ const cheatHistory: string[] = [];
 let multiplayerSync: LegacyMultiplayerSync | null = null;
 let multiplayerRespawnSeconds = 0;
 let multiplayerWasDowned = false;
+
+// Potion inventory state
+const POTION_KINDS = ["health", "mana", "poison", "speed", "freeze"] as const;
+type PotionKind = (typeof POTION_KINDS)[number];
+const potionInventory: Record<PotionKind, number> = { health: 0, mana: 0, poison: 0, speed: 0, freeze: 0 };
+let selectedPotionIndex = 0;
+let isPlayerPoisoned = false;
+let isPlayerSpeedBoosted = false;
+let isPlayerFrozen = false;
+let speedBoostStartedAt = 0;          // performance.now() timestamp when speed boost began
+const SPEED_BOOST_DURATION = 60_000;  // 60 seconds in ms (matches server)
+const poisonCloudVisuals = new Map<string, PoisonCloudVisual>();
 
 function tryAcquirePointerLock(): void {
   if (cheatOpen) return;
@@ -497,7 +505,7 @@ function updateCheatBadges(): void {
   const badges: string[] = [];
   if (godMode) badges.push("FURBALL");
   if (speedBoost) badges.push("ZOOMIES");
-  if (hasMinigun) badges.push("MEOW");
+  if (hasIceShard) badges.push("MEOW");
   cheatBadgesEl.classList.toggle("hidden", badges.length === 0);
   cheatBadgesEl.innerHTML = badges.map((b) => `<span class=\"cheat-badge\">${b}</span>`).join("");
 }
@@ -506,20 +514,24 @@ function updateHud(): void {
   const hp = Math.max(0, Math.floor(health));
   healthTextEl.textContent = `Health: ${hp}`;
   healthBarEl.style.width = `${Math.max(0, Math.min(100, (health / maxHealth) * 100))}%`;
+  healthBarEl.classList.toggle("poisoned", isPlayerPoisoned);
   const staminaPct = Math.max(0, Math.min(100, (stamina / MAX_STAMINA) * 100));
   staminaTextEl.textContent = `Stamina: ${Math.round(staminaPct)}%`;
   staminaBarEl.style.width = `${staminaPct}%`;
+  staminaBarEl.classList.toggle("speed-boosted", isPlayerSpeedBoosted);
+  staminaBarEl.classList.toggle("frozen", isPlayerFrozen);
   levelEl.textContent = multiplayerRespawnSeconds > 0
     ? `Respawn: ${multiplayerRespawnSeconds}s`
     : `Level: ${currentLevel + 1}/${LEVELS.length}`;
   manaTextEl.textContent = `Mana: ${Math.floor(mana)}/${MAX_MANA}`;
   manaBarEl.style.width = `${Math.max(0, Math.min(100, (mana / MAX_MANA) * 100))}%`;
-  grenadesEl.textContent = `Grenades: ${grenades}/3`;
-  smokeGrenadesEl.textContent = `Smoke: ${smokeGrenades}/2`;
-  const weaponName = weaponMode === "flamethrower"
-    ? `Flamethrower (${Math.max(0, Math.ceil(flameFuel))})`
-    : `${weaponMode[0].toUpperCase()}${weaponMode.slice(1)}`;
-  weaponEl.textContent = `Weapon: ${weaponName}`;
+  const RUNE_DISPLAY_NAMES: Record<RuneMode, string> = {
+    "fireball": "Fireball",
+    "lightning-bolt": "Lightning Bolt",
+    "ice-shard": "Ice Shard",
+    "inferno": `Inferno (${Math.max(0, Math.ceil(infernoFuel))})`,
+  };
+  runeEl.textContent = `Rune: ${RUNE_DISPLAY_NAMES[runeMode]}`;
 
   const alive = enemies.filter((e) => e.health > 0).length;
   if (multiplayerSync) {
@@ -540,11 +552,27 @@ function updateHud(): void {
   }
 
   updateCheatBadges();
-}
 
-function setGrenadeChargeHud(active: boolean, power01 = 0): void {
-  grenadeChargeHudEl.classList.toggle("hidden", !active);
-  grenadeChargeBarEl.style.width = `${Math.max(0, Math.min(100, power01 * 100))}%`;
+  // Update potion belt
+  for (let i = 0; i < POTION_KINDS.length; i += 1) {
+    const kind = POTION_KINDS[i];
+    const count = potionInventory[kind];
+    potionCountEls[i].textContent = `x${count}`;
+    potionSlotEls[i].classList.toggle("selected", i === selectedPotionIndex);
+    potionSlotEls[i].classList.toggle("empty", count <= 0);
+  }
+
+  // Speed boost radial cooldown indicator
+  if (isPlayerSpeedBoosted && speedBoostStartedAt > 0) {
+    const elapsed = performance.now() - speedBoostStartedAt;
+    const fraction = Math.min(1, elapsed / SPEED_BOOST_DURATION);
+    const deg = Math.round(fraction * 360);
+    speedCooldownEl.style.background =
+      `conic-gradient(transparent ${deg}deg, rgba(0,0,0,0.55) ${deg}deg)`;
+    speedCooldownEl.style.display = "block";
+  } else {
+    speedCooldownEl.style.display = "none";
+  }
 }
 
 function applyMinimapSize(): void {
@@ -663,31 +691,31 @@ function makeGunModel(): void {
   rear.material = gunMat;
 }
 
-function stopFlameStream(): void {
-  if (!flameStream) return;
-  flameStream.core.stop();
-  flameStream.smoke.stop();
-  flameStream.embers.stop();
+function stopInfernoStream(): void {
+  if (!infernoStream) return;
+  infernoStream.core.stop();
+  infernoStream.smoke.stop();
+  infernoStream.embers.stop();
 }
 
-function disposeFlameStream(): void {
-  if (!flameStream) return;
-  flameStream.core.dispose();
-  flameStream.smoke.dispose();
-  flameStream.embers.dispose();
-  flameStream.nozzle.dispose();
-  flameStream = null;
+function disposeInfernoStream(): void {
+  if (!infernoStream) return;
+  infernoStream.core.dispose(false);
+  infernoStream.smoke.dispose(false);
+  infernoStream.embers.dispose(false);
+  infernoStream.nozzle.dispose();
+  infernoStream = null;
 }
 
-function ensureFlameStream(): FlameStream {
-  if (flameStream) return flameStream;
+function ensureInfernoStream(): InfernoStream {
+  if (infernoStream) return infernoStream;
   const nozzle = MeshBuilder.CreateBox("flame-nozzle", { size: 0.02 }, scene);
   nozzle.parent = camera;
   nozzle.position = new Vector3(0.27, -0.16, 0.86);
   nozzle.isVisible = false;
   nozzle.isPickable = false;
 
-  const core = new ParticleSystem("flamethrower-core", 1100, scene);
+  const core = new ParticleSystem("inferno-core", 1100, scene);
   core.particleTexture = fireParticleTex;
   core.emitter = nozzle;
   core.minEmitBox = new Vector3(-0.03, -0.03, -0.03);
@@ -709,7 +737,7 @@ function ensureFlameStream(): FlameStream {
   core.maxEmitPower = 10.8;
   core.updateSpeed = 0.012;
 
-  const embers = new ParticleSystem("flamethrower-embers", 850, scene);
+  const embers = new ParticleSystem("inferno-embers", 850, scene);
   embers.particleTexture = fireParticleTex;
   embers.emitter = nozzle;
   embers.minEmitBox = new Vector3(-0.03, -0.03, -0.03);
@@ -731,7 +759,7 @@ function ensureFlameStream(): FlameStream {
   embers.maxEmitPower = 13.2;
   embers.updateSpeed = 0.012;
 
-  const smoke = new ParticleSystem("flamethrower-smoke", 1000, scene);
+  const smoke = new ParticleSystem("inferno-smoke", 1000, scene);
   smoke.particleTexture = smokeParticleTex;
   smoke.emitter = nozzle;
   smoke.minEmitBox = new Vector3(-0.08, -0.06, -0.08);
@@ -753,19 +781,19 @@ function ensureFlameStream(): FlameStream {
   smoke.maxEmitPower = 6.2;
   smoke.updateSpeed = 0.02;
 
-  flameStream = { nozzle, core, smoke, embers };
-  return flameStream;
+  infernoStream = { nozzle, core, smoke, embers };
+  return infernoStream;
 }
 
-function updateFlameStreamVisual(active: boolean): void {
-  const stream = ensureFlameStream();
+function updateInfernoStreamVisual(active: boolean): void {
+  const stream = ensureInfernoStream();
   stream.nozzle.position.set(0.27, -0.16, 0.86);
 
   if (!active) {
     stream.core.emitRate = 0;
     stream.embers.emitRate = 0;
     stream.smoke.emitRate = 0;
-    stopFlameStream();
+    stopInfernoStream();
     return;
   }
 
@@ -778,7 +806,7 @@ function updateFlameStreamVisual(active: boolean): void {
 }
 
 function disposeLevel(): void {
-  disposeFlameStream();
+  disposeInfernoStream();
   for (const mesh of [...levelMeshes, ...wallMeshes]) mesh.dispose();
   levelMeshes = [];
   wallMeshes = [];
@@ -792,18 +820,23 @@ function disposeLevel(): void {
 
   for (const shot of enemyShots) shot.mesh.dispose();
   enemyShots = [];
-  for (const grenade of grenadeProjectiles) grenade.mesh.dispose();
-  grenadeProjectiles = [];
-  for (const burst of grenadeBursts) {
-    for (const sys of burst.systems) sys.dispose();
+  for (const proj of potionProjectiles) proj.mesh.dispose();
+  potionProjectiles = [];
+  for (const burst of impactBursts) {
+    for (const sys of burst.systems) sys.dispose(false);
     burst.light.dispose();
     burst.mesh.dispose();
   }
-  grenadeBursts = [];
-  for (const cloud of smokeClouds) {
-    for (const sys of cloud.systems) sys.dispose();
+  impactBursts = [];
+  for (const cloud of effectClouds) {
+    for (const sys of cloud.systems) sys.dispose(false);
   }
-  smokeClouds = [];
+  effectClouds = [];
+
+  for (const [, visual] of poisonCloudVisuals) {
+    disposePoisonCloudVisual(visual);
+  }
+  poisonCloudVisuals.clear();
 
   for (const pickup of pickups) {
     disposePickupVisual(pickup.visual);
@@ -814,6 +847,8 @@ function disposeLevel(): void {
     portalMesh.dispose();
     portalMesh = null;
   }
+
+  // Safety reset
 }
 
 function createWall(x: number, y: number): void {
@@ -1228,7 +1263,6 @@ function spawnPickupsForLevel(): void {
 
   const healthCount = Math.max(2, 3 + Math.floor(currentLevel / 2) + (currentLevel === 3 ? 2 : 0));
   const manaCount = 4;
-  const grenadeCount = 1 + Math.floor(currentLevel / 3);
   const flameCount = currentLevel >= 1 ? 1 + Math.floor(currentLevel / 4) : 0;
   const pickPoint = (index: number): { x: number; y: number } => {
     for (let tries = 0; tries < PICKUP_POINTS.length; tries += 1) {
@@ -1248,11 +1282,6 @@ function spawnPickupsForLevel(): void {
   for (let i = 0; i < manaCount; i += 1) {
     const p = pickPoint(i + currentLevel * 2 + 3);
     pickups.push(createPickupModel("mana", i, p.x, p.y, 50));
-  }
-
-  for (let i = 0; i < grenadeCount; i += 1) {
-    const p = pickPoint(i + currentLevel * 3 + 5);
-    pickups.push(createPickupModel("grenade", i, p.x, p.y, 1));
   }
 
   for (let i = 0; i < flameCount; i += 1) {
@@ -1319,13 +1348,11 @@ function startLevel(levelIndex: number, freshRun = false): void {
 function resetRun(): void {
   health = maxHealth;
   mana = 60;
-  grenades = 1;
-  smokeGrenades = 2;
   stamina = MAX_STAMINA;
   sprintExhausted = false;
-  hasCannon = false;
-  hasMinigun = false;
-  weaponMode = "gun";
+  hasLightningBolt = false;
+  hasIceShard = false;
+  runeMode = "fireball";
   speedBoost = false;
   godMode = false;
   startLevel(0, true);
@@ -1363,8 +1390,8 @@ function killEnemy(enemy: EnemyEntity): void {
   playEnemyDeathSound();
 
   if (enemy.type === "boss") {
-    hasCannon = true;
-    weaponMode = "cannon";
+    hasLightningBolt = true;
+    runeMode = "lightning-bolt";
     mana = Math.min(MAX_MANA, mana + 35);
   }
 }
@@ -1389,7 +1416,7 @@ function findEnemyByMesh(mesh: AbstractMesh): EnemyEntity | undefined {
   return undefined;
 }
 
-function applyFlamethrowerDamage(): void {
+function applyInfernoDamage(): void {
   const from = camera.position.add(new Vector3(0, -0.18, 0));
   const forward = camera.getDirection(new Vector3(0, 0.02, 1)).normalize();
   const maxDistance = 6.2;
@@ -1409,7 +1436,7 @@ function applyFlamethrowerDamage(): void {
   }
 }
 
-function fireWeapon(): void {
+function fireRune(): void {
   if (gameOver || victory) return;
 
   if (SERVER_AUTHORITATIVE_ONLY || multiplayerSync) {
@@ -1418,7 +1445,7 @@ function fireWeapon(): void {
     mana -= 2;
     fireCooldown = 0.22;
     recoil = 0.1;
-    playGunSound();
+    playFireballSound();
     const aimDir = camera.getDirection(new Vector3(0, 0, 1)).normalize();
     multiplayerSync.sendShoot({
       dirX: aimDir.x,
@@ -1432,48 +1459,48 @@ function fireWeapon(): void {
   let damage = 1;
   let splash = 0;
 
-  if (weaponMode === "flamethrower") {
-    if (flameFuel <= 0) {
-      weaponMode = hasCannon ? "cannon" : hasMinigun ? "minigun" : "gun";
+  if (runeMode === "inferno") {
+    if (infernoFuel <= 0) {
+      runeMode = hasLightningBolt ? "lightning-bolt" : hasIceShard ? "ice-shard" : "fireball";
       updateHud();
-      stopFlameStream();
+      stopInfernoStream();
       return;
     }
-    flameFuel = Math.max(0, flameFuel - 2.1);
+    infernoFuel = Math.max(0, infernoFuel - 2.1);
     fireCooldown = 0.04;
     recoil = 0.02;
-    playFlamethrowerSound();
-    applyFlamethrowerDamage();
-    updateFlameStreamVisual(true);
-    if (flameFuel <= 0.001) {
-      flameFuel = 0;
-      weaponMode = hasCannon ? "cannon" : hasMinigun ? "minigun" : "gun";
-      updateFlameStreamVisual(false);
+    playInfernoSound();
+    applyInfernoDamage();
+    updateInfernoStreamVisual(true);
+    if (infernoFuel <= 0.001) {
+      infernoFuel = 0;
+      runeMode = hasLightningBolt ? "lightning-bolt" : hasIceShard ? "ice-shard" : "fireball";
+      updateInfernoStreamVisual(false);
     }
     updateHud();
     return;
-  } else if (weaponMode === "cannon") {
+  } else if (runeMode === "lightning-bolt") {
     if (mana < 2) return;
     mana -= 2;
     fireCooldown = 0.58;
     damage = 4;
     splash = 2.2;
     recoil = 0.17;
-    playCannonSound();
-  } else if (weaponMode === "minigun") {
+    playLightningBoltSound();
+  } else if (runeMode === "ice-shard") {
     if (mana < 2) return;
     mana -= 2;
     fireCooldown = 0.055;
     damage = 1;
     recoil = 0.04;
-    playGunSound();
+    playFireballSound();
   } else {
     if (mana < 2) return;
     mana -= 2;
     fireCooldown = 0.18;
     damage = 1;
     recoil = 0.09;
-    playGunSound();
+    playFireballSound();
   }
 
   const ray = camera.getForwardRay(60);
@@ -1495,36 +1522,31 @@ function fireWeapon(): void {
   updateHud();
 }
 
-function explodeGrenade(at: Vector3): void {
-  playGrenadeExplodeSound();
+function fireballImpact(at: Vector3): void {
+  // Cap simultaneous impact bursts to avoid exceeding WebGL uniform block limit
+  const MAX_IMPACT_BURSTS = 4;
+  while (impactBursts.length >= MAX_IMPACT_BURSTS) {
+    const oldest = impactBursts.shift()!;
+    for (const sys of oldest.systems) { sys.stop(); sys.dispose(false); }
+    oldest.light.dispose();
+    oldest.mesh.dispose();
+  }
 
-  const burstMesh = MeshBuilder.CreateSphere("grenade-burst", { diameter: 0.8, segments: 16 }, scene);
-  const burstMat = new StandardMaterial("grenade-burst-mat", scene);
+  playImpactSound();
+
+  const burstMesh = MeshBuilder.CreateSphere("impact-burst", { diameter: 0.8, segments: 16 }, scene);
+  const burstMat = new StandardMaterial("impact-burst-mat", scene);
   burstMat.emissiveColor = new Color3(1.0, 0.66, 0.2);
   burstMat.alpha = 0.45;
   burstMesh.material = burstMat;
   burstMesh.position.copyFrom(at);
 
-  const burstLight = new PointLight("grenade-burst-light", at.clone(), scene);
+  const burstLight = new PointLight("impact-burst-light", at.clone(), scene);
   burstLight.diffuse = new Color3(1.0, 0.55, 0.2);
   burstLight.intensity = 4.2;
   burstLight.range = 10;
 
-  const radius = 3.2;
-  for (const enemy of enemies) {
-    if (enemy.health <= 0) continue;
-    const dist = Vector3.Distance(enemy.mesh.position, at);
-    if (dist > radius) continue;
-    const dmg = Math.max(2, 8 - dist * 1.8);
-    damageEnemy(enemy, dmg);
-  }
-
-  const distToPlayer = Vector3.Distance(camera.position, at);
-  if (distToPlayer < radius) {
-    damagePlayer(Math.max(0, 22 - distToPlayer * 6));
-  }
-
-  const flameBurst = new ParticleSystem("grenade-flame-burst", 420, scene);
+  const flameBurst = new ParticleSystem("impact-flame-burst", 420, scene);
   flameBurst.particleTexture = fireParticleTex;
   flameBurst.emitter = at.clone();
   flameBurst.minEmitBox = new Vector3(-0.1, -0.05, -0.1);
@@ -1547,7 +1569,7 @@ function explodeGrenade(at: Vector3): void {
   flameBurst.updateSpeed = 0.015;
   flameBurst.start();
 
-  const emberBurst = new ParticleSystem("grenade-ember-burst", 360, scene);
+  const emberBurst = new ParticleSystem("impact-ember-burst", 360, scene);
   emberBurst.particleTexture = fireParticleTex;
   emberBurst.emitter = at.clone();
   emberBurst.minEmitBox = new Vector3(-0.15, 0.02, -0.15);
@@ -1570,111 +1592,200 @@ function explodeGrenade(at: Vector3): void {
   emberBurst.updateSpeed = 0.015;
   emberBurst.start();
 
-  grenadeBursts.push({
+  impactBursts.push({
     mesh: burstMesh,
     light: burstLight,
     life: 0.34,
     flashLife: 0.34,
-    radius,
+    radius: 3.2,
     systems: [flameBurst, emberBurst],
     cleanupAt: -1.1,
     stopped: false,
   });
 }
 
-function explodeSmokeGrenade(at: Vector3): void {
-  const core = new ParticleSystem("smoke-core", 1300, scene);
+function freezePotionImpact(at: Vector3): void {
+  // Ice crystal burst — bright blue/white particles that expand rapidly then fade
+  const burst = new ParticleSystem("freeze-burst", 1200, scene);
+  burst.particleTexture = smokeParticleTex;
+  burst.emitter = at.clone();
+  burst.minEmitBox = new Vector3(-0.2, 0.05, -0.2);
+  burst.maxEmitBox = new Vector3(0.2, 0.3, 0.2);
+  burst.color1 = new Color4(0.6, 0.85, 1.0, 0.85);
+  burst.color2 = new Color4(0.4, 0.65, 0.95, 0.75);
+  burst.colorDead = new Color4(0.3, 0.5, 0.8, 0);
+  burst.minSize = 0.6;
+  burst.maxSize = 1.8;
+  burst.minLifeTime = 0.6;
+  burst.maxLifeTime = 1.6;
+  burst.emitRate = 800;
+  burst.blendMode = ParticleSystem.BLENDMODE_ADD;
+  burst.gravity = new Vector3(0, -1.5, 0);
+  burst.direction1 = new Vector3(-2.5, 1.5, -2.5);
+  burst.direction2 = new Vector3(2.5, 4.0, 2.5);
+  burst.minAngularSpeed = -1.0;
+  burst.maxAngularSpeed = 1.0;
+  burst.minEmitPower = 2.0;
+  burst.maxEmitPower = 5.0;
+  burst.updateSpeed = 0.012;
+  burst.targetStopDuration = 0.15;
+  burst.start();
+
+  // Snow/ice mist that lingers briefly
+  const mist = new ParticleSystem("freeze-mist", 600, scene);
+  mist.particleTexture = smokeParticleTex;
+  mist.emitter = at.clone();
+  mist.minEmitBox = new Vector3(-1.5, 0.0, -1.5);
+  mist.maxEmitBox = new Vector3(1.5, 0.5, 1.5);
+  mist.color1 = new Color4(0.7, 0.9, 1.0, 0.5);
+  mist.color2 = new Color4(0.85, 0.95, 1.0, 0.4);
+  mist.colorDead = new Color4(0.5, 0.7, 0.9, 0);
+  mist.minSize = 1.0;
+  mist.maxSize = 2.5;
+  mist.minLifeTime = 1.0;
+  mist.maxLifeTime = 2.5;
+  mist.emitRate = 350;
+  mist.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  mist.gravity = new Vector3(0, 0.3, 0);
+  mist.direction1 = new Vector3(-1.0, 0.2, -1.0);
+  mist.direction2 = new Vector3(1.0, 0.8, 1.0);
+  mist.minAngularSpeed = -0.5;
+  mist.maxAngularSpeed = 0.5;
+  mist.minEmitPower = 0.1;
+  mist.maxEmitPower = 0.6;
+  mist.updateSpeed = 0.015;
+  mist.targetStopDuration = 0.3;
+  mist.start();
+
+  // Bright flash light
+  const light = new PointLight("freeze-flash", at.clone(), scene);
+  light.diffuse = new Color3(0.5, 0.75, 1.0);
+  light.intensity = 5.0;
+  light.range = 8;
+
+  // Track in effectClouds for automatic cleanup (reuse existing pattern)
+  effectClouds.push({
+    systems: [burst, mist],
+    life: 2.0,
+    cleanupAt: -3.0,
+    stopped: false,
+  });
+
+  // Fade out the flash light
+  const fadeStart = performance.now();
+  const fadeDuration = 600;
+  const fadeTick = (): void => {
+    const elapsed = performance.now() - fadeStart;
+    const t = Math.max(0, 1 - elapsed / fadeDuration);
+    light.intensity = 5.0 * t;
+    if (t > 0) requestAnimationFrame(fadeTick);
+    else light.dispose();
+  };
+  requestAnimationFrame(fadeTick);
+}
+
+function createPoisonCloudVisual(at: Vector3): PoisonCloudVisual {
+  const core = new ParticleSystem("poison-core", 900, scene);
   core.particleTexture = smokeParticleTex;
   core.emitter = at.clone();
-  core.minEmitBox = new Vector3(-0.25, 0.05, -0.25);
-  core.maxEmitBox = new Vector3(0.25, 0.35, 0.25);
-  core.color1 = new Color4(0.15, 0.15, 0.15, 0.72);
-  core.color2 = new Color4(0.27, 0.27, 0.27, 0.62);
-  core.colorDead = new Color4(0.1, 0.1, 0.1, 0);
-  core.minSize = 0.85;
-  core.maxSize = 2.2;
-  core.minLifeTime = 1.8;
-  core.maxLifeTime = 3.8;
-  core.emitRate = 420;
+  core.minEmitBox = new Vector3(-1.2, 0.05, -1.2);
+  core.maxEmitBox = new Vector3(1.2, 0.6, 1.2);
+  core.color1 = new Color4(0.12, 0.55, 0.1, 0.6);
+  core.color2 = new Color4(0.2, 0.7, 0.15, 0.5);
+  core.colorDead = new Color4(0.08, 0.35, 0.05, 0);
+  core.minSize = 1.2;
+  core.maxSize = 2.8;
+  core.minLifeTime = 2.0;
+  core.maxLifeTime = 4.5;
+  core.emitRate = 80;
   core.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-  core.gravity = new Vector3(0, 0.36, 0);
-  core.direction1 = new Vector3(-0.65, 0.5, -0.65);
-  core.direction2 = new Vector3(0.65, 1.0, 0.65);
-  core.minAngularSpeed = -0.6;
-  core.maxAngularSpeed = 0.6;
-  core.minEmitPower = 0.08;
-  core.maxEmitPower = 0.52;
+  core.gravity = new Vector3(0, 0.15, 0);
+  core.direction1 = new Vector3(-0.4, 0.2, -0.4);
+  core.direction2 = new Vector3(0.4, 0.7, 0.4);
+  core.minAngularSpeed = -0.4;
+  core.maxAngularSpeed = 0.4;
+  core.minEmitPower = 0.04;
+  core.maxEmitPower = 0.3;
   core.updateSpeed = 0.015;
   core.start();
 
-  const wisps = new ParticleSystem("smoke-wisps", 900, scene);
+  const wisps = new ParticleSystem("poison-wisps", 500, scene);
   wisps.particleTexture = smokeParticleTex;
   wisps.emitter = at.clone();
-  wisps.minEmitBox = new Vector3(-0.6, 0.1, -0.6);
-  wisps.maxEmitBox = new Vector3(0.6, 0.5, 0.6);
-  wisps.color1 = new Color4(0.35, 0.35, 0.35, 0.46);
-  wisps.color2 = new Color4(0.2, 0.2, 0.2, 0.36);
-  wisps.colorDead = new Color4(0.08, 0.08, 0.08, 0);
-  wisps.minSize = 1.4;
-  wisps.maxSize = 3.6;
-  wisps.minLifeTime = 2.3;
-  wisps.maxLifeTime = 5.2;
-  wisps.emitRate = 260;
+  wisps.minEmitBox = new Vector3(-2.0, 0.1, -2.0);
+  wisps.maxEmitBox = new Vector3(2.0, 0.4, 2.0);
+  wisps.color1 = new Color4(0.25, 0.8, 0.15, 0.35);
+  wisps.color2 = new Color4(0.15, 0.55, 0.1, 0.25);
+  wisps.colorDead = new Color4(0.05, 0.25, 0.03, 0);
+  wisps.minSize = 1.8;
+  wisps.maxSize = 4.0;
+  wisps.minLifeTime = 3.0;
+  wisps.maxLifeTime = 6.0;
+  wisps.emitRate = 40;
   wisps.blendMode = ParticleSystem.BLENDMODE_STANDARD;
-  wisps.gravity = new Vector3(0, 0.28, 0);
-  wisps.direction1 = new Vector3(-0.8, 0.35, -0.8);
-  wisps.direction2 = new Vector3(0.8, 0.9, 0.8);
-  wisps.minAngularSpeed = -0.35;
-  wisps.maxAngularSpeed = 0.35;
-  wisps.minEmitPower = 0.04;
-  wisps.maxEmitPower = 0.34;
+  wisps.gravity = new Vector3(0, 0.1, 0);
+  wisps.direction1 = new Vector3(-0.6, 0.15, -0.6);
+  wisps.direction2 = new Vector3(0.6, 0.5, 0.6);
+  wisps.minAngularSpeed = -0.25;
+  wisps.maxAngularSpeed = 0.25;
+  wisps.minEmitPower = 0.02;
+  wisps.maxEmitPower = 0.2;
   wisps.updateSpeed = 0.017;
   wisps.start();
 
-  smokeClouds.push({
-    systems: [core, wisps],
-    life: 3.2,
-    cleanupAt: -3.2,
-    stopped: false,
-  });
+  const light = new PointLight("poison-cloud-light", at.clone(), scene);
+  light.diffuse = new Color3(0.2, 0.8, 0.15);
+  light.intensity = 1.2;
+  light.range = 6;
+
+  return { systems: [core, wisps], light };
 }
 
-function throwGrenade(chargeSeconds = 0): void {
-  throwTypedGrenade("explosive", chargeSeconds);
-}
-
-function throwSmokeGrenade(): void {
-  throwTypedGrenade("smoke", 0.5);
-}
-
-function throwTypedGrenade(kind: "explosive" | "smoke", chargeSeconds = 0): void {
-  if (grenadeCooldown > 0 || gameOver || victory) return;
-  if (kind === "explosive") {
-    if (grenades <= 0) {
-      setCheatStatus("No explosive grenades");
-      return;
-    }
-    grenades -= 1;
-  } else {
-    if (smokeGrenades <= 0) {
-      setCheatStatus("No smoke grenades");
-      return;
-    }
-    smokeGrenades -= 1;
+function disposePoisonCloudVisual(visual: PoisonCloudVisual): void {
+  for (const sys of visual.systems) {
+    sys.stop();
+    sys.dispose(false);
   }
-  grenadeCooldown = 0.45;
+  visual.light.dispose();
+}
+
+function syncPoisonCloudVisuals(): void {
+  if (!multiplayerSync) return;
+  const serverClouds = multiplayerSync.getPoisonCloudPositions();
+
+  // Remove visuals for clouds no longer on the server
+  for (const [id, visual] of poisonCloudVisuals) {
+    if (!serverClouds.has(id)) {
+      disposePoisonCloudVisual(visual);
+      poisonCloudVisuals.delete(id);
+    }
+  }
+
+  // Create visuals for new server clouds
+  for (const [id, cloud] of serverClouds) {
+    if (!poisonCloudVisuals.has(id)) {
+      const pos = new Vector3(cloud.x, cloud.y, cloud.z);
+      poisonCloudVisuals.set(id, createPoisonCloudVisual(pos));
+    }
+  }
+}
+
+function throwPotionProjectile(kind: "freeze", chargeSeconds = 0): void {
+  if (potionCooldown > 0 || gameOver || victory) return;
+  potionCooldown = 0.45;
   updateHud();
 
-  const mesh = MeshBuilder.CreateSphere("grenade", { diameter: 0.22, segments: 10 }, scene);
-  const mat = new StandardMaterial("grenade-mat", scene);
-  mat.diffuseColor = kind === "explosive" ? new Color3(0.28, 0.45, 0.18) : new Color3(0.46, 0.46, 0.5);
+  const mesh = MeshBuilder.CreateSphere("potion-proj", { diameter: 0.22, segments: 10 }, scene);
+  const mat = new StandardMaterial("potion-proj-mat", scene);
+  mat.diffuseColor = new Color3(0.55, 0.8, 0.95);
+  mat.emissiveColor = new Color3(0.15, 0.3, 0.5);
   mesh.material = mat;
   mesh.position = camera.position.add(camera.getDirection(new Vector3(0, -0.03, 1)).normalize().scale(0.85));
 
   const charge01 = Math.max(0, Math.min(1, chargeSeconds / 1.25));
   const throwSpeed = 8.2 + charge01 * 13.8;
   const throwDir = camera.getDirection(new Vector3(0, 0.12, 1)).normalize();
-  grenadeProjectiles.push({
+  potionProjectiles.push({
     mesh,
     velocity: throwDir.scale(throwSpeed),
     life: 1.1 + charge01 * 1.1,
@@ -2206,69 +2317,61 @@ function updateEnemyShots(dt: number): void {
   }
 }
 
-function updateGrenades(dt: number): void {
-  for (let i = grenadeProjectiles.length - 1; i >= 0; i -= 1) {
-    const grenade = grenadeProjectiles[i];
-    const prev = grenade.mesh.position.clone();
-    grenade.velocity.y -= GRAVITY * 0.72 * dt;
-    grenade.mesh.position.addInPlace(grenade.velocity.scale(dt));
-    grenade.mesh.rotation.x += dt * 7;
-    grenade.mesh.rotation.z += dt * 5;
-    grenade.life -= dt;
+function updateProjectiles(dt: number): void {
+  for (let i = potionProjectiles.length - 1; i >= 0; i -= 1) {
+    const proj = potionProjectiles[i];
+    const prev = proj.mesh.position.clone();
+    proj.velocity.y -= GRAVITY * 0.72 * dt;
+    proj.mesh.position.addInPlace(proj.velocity.scale(dt));
+    proj.mesh.rotation.x += dt * 7;
+    proj.mesh.rotation.z += dt * 5;
+    proj.life -= dt;
 
     let bounced = false;
 
-    const mapX = worldToMap(new Vector3(grenade.mesh.position.x, prev.y, prev.z));
+    const mapX = worldToMap(new Vector3(proj.mesh.position.x, prev.y, prev.z));
     if (isWallAt(mapX.x, mapX.y)) {
-      grenade.mesh.position.x = prev.x;
-      grenade.velocity.x = -grenade.velocity.x * 0.72;
+      proj.mesh.position.x = prev.x;
+      proj.velocity.x = -proj.velocity.x * 0.72;
       bounced = true;
     }
 
-    const mapZ = worldToMap(new Vector3(prev.x, prev.y, grenade.mesh.position.z));
+    const mapZ = worldToMap(new Vector3(prev.x, prev.y, proj.mesh.position.z));
     if (isWallAt(mapZ.x, mapZ.y)) {
-      grenade.mesh.position.z = prev.z;
-      grenade.velocity.z = -grenade.velocity.z * 0.72;
+      proj.mesh.position.z = prev.z;
+      proj.velocity.z = -proj.velocity.z * 0.72;
       bounced = true;
     }
 
-    const m = worldToMap(grenade.mesh.position);
+    const m = worldToMap(proj.mesh.position);
     const floor = floorHeightAtMap(m.x, m.y);
-    if (grenade.mesh.position.y <= floor + 0.12) {
-      grenade.mesh.position.y = floor + 0.12;
-      grenade.velocity.y = Math.abs(grenade.velocity.y) * 0.56;
-      grenade.velocity.x *= 0.82;
-      grenade.velocity.z *= 0.82;
+    if (proj.mesh.position.y <= floor + 0.12) {
+      proj.mesh.position.y = floor + 0.12;
+      proj.velocity.y = Math.abs(proj.velocity.y) * 0.56;
+      proj.velocity.x *= 0.82;
+      proj.velocity.z *= 0.82;
       bounced = true;
     }
 
     if (bounced) {
-      grenade.velocity.y *= 0.92;
-      grenade.bouncesRemaining -= 1;
-      const impactSpeed = Math.sqrt(
-        grenade.velocity.x * grenade.velocity.x +
-        grenade.velocity.y * grenade.velocity.y +
-        grenade.velocity.z * grenade.velocity.z,
-      );
-      if (impactSpeed > 1.35) playGrenadeBounceSound();
+      proj.velocity.y *= 0.92;
+      proj.bouncesRemaining -= 1;
     }
 
     const tooSlowAfterBounce =
-      grenade.bouncesRemaining <= 0 ||
-      (Math.abs(grenade.velocity.y) < 0.8 && Math.hypot(grenade.velocity.x, grenade.velocity.z) < 1.2);
+      proj.bouncesRemaining <= 0 ||
+      (Math.abs(proj.velocity.y) < 0.8 && Math.hypot(proj.velocity.x, proj.velocity.z) < 1.2);
 
-    if (grenade.life <= 0 || tooSlowAfterBounce) {
-      const at = grenade.mesh.position.clone();
-      const kind = grenade.kind;
-      grenade.mesh.dispose();
-      grenadeProjectiles.splice(i, 1);
-      if (kind === "explosive") explodeGrenade(at);
-      else explodeSmokeGrenade(at);
+    if (proj.life <= 0 || tooSlowAfterBounce) {
+      const at = proj.mesh.position.clone();
+      proj.mesh.dispose();
+      potionProjectiles.splice(i, 1);
+      if (proj.kind === "freeze") freezePotionImpact(at);
     }
   }
 
-  for (let i = grenadeBursts.length - 1; i >= 0; i -= 1) {
-    const burst = grenadeBursts[i];
+  for (let i = impactBursts.length - 1; i >= 0; i -= 1) {
+    const burst = impactBursts[i];
     burst.life -= dt;
     const t = Math.max(0, burst.life / burst.flashLife);
     const s = 1 + (1 - t) * 5.2;
@@ -2283,17 +2386,17 @@ function updateGrenades(dt: number): void {
     }
 
     if (burst.life <= burst.cleanupAt) {
-      for (const sys of burst.systems) sys.dispose();
+      for (const sys of burst.systems) sys.dispose(false);
       burst.light.dispose();
       burst.mesh.dispose();
-      grenadeBursts.splice(i, 1);
+      impactBursts.splice(i, 1);
     }
   }
 }
 
-function updateSmokeClouds(dt: number): void {
-  for (let i = smokeClouds.length - 1; i >= 0; i -= 1) {
-    const cloud = smokeClouds[i];
+function updateEffectClouds(dt: number): void {
+  for (let i = effectClouds.length - 1; i >= 0; i -= 1) {
+    const cloud = effectClouds[i];
     cloud.life -= dt;
     if (!cloud.stopped) {
       const t = Math.max(0, Math.min(1, cloud.life / 3.2));
@@ -2307,8 +2410,8 @@ function updateSmokeClouds(dt: number): void {
     }
 
     if (cloud.life <= cloud.cleanupAt) {
-      for (const sys of cloud.systems) sys.dispose();
-      smokeClouds.splice(i, 1);
+      for (const sys of cloud.systems) sys.dispose(false);
+      effectClouds.splice(i, 1);
     }
   }
 }
@@ -2329,12 +2432,10 @@ function updatePickups(_dt: number): void {
       health = Math.min(maxHealth, health + p.amount);
     } else if (p.kind === "mana") {
       mana = Math.min(MAX_MANA, mana + p.amount);
-    } else if (p.kind === "grenade") {
-      grenades = Math.min(3, grenades + p.amount);
     } else {
-      hasFlamethrower = true;
-      flameFuel = Math.min(FLAMETHROWER_MAX_FUEL, flameFuel + p.amount);
-      if (weaponMode !== "flamethrower") weaponMode = "flamethrower";
+      hasInferno = true;
+      infernoFuel = Math.min(INFERNO_MAX_FUEL, infernoFuel + p.amount);
+      if (runeMode !== "inferno") runeMode = "inferno";
     }
 
     playPickupSound();
@@ -2358,17 +2459,20 @@ function updatePlayer(dt: number): void {
   if (wanted.lengthSquared() > 0.001) {
     wanted.normalize();
     const sprintHeld = input.ShiftLeft || input.ShiftRight;
-    const canSprint = sprintHeld && !sprintExhausted && stamina > 0;
+    const canSprint = sprintHeld && !sprintExhausted && stamina > 0 && !isPlayerFrozen;
     const sprinting = canSprint;
     let speedPerSec = sprinting ? SPRINT_SPEED : WALK_SPEED;
     if (speedBoost) speedPerSec *= SPEED_BOOST_MULT;
+    if (isPlayerFrozen) speedPerSec *= 0.4;
     const speed = speedPerSec * dt;
 
     if (sprinting) {
-      stamina = Math.max(0, stamina - STAMINA_DRAIN_PER_SEC * dt);
-      if (stamina <= 0.001) {
-        stamina = 0;
-        sprintExhausted = true;
+      if (!isPlayerSpeedBoosted) {
+        stamina = Math.max(0, stamina - STAMINA_DRAIN_PER_SEC * dt);
+        if (stamina <= 0.001) {
+          stamina = 0;
+          sprintExhausted = true;
+        }
       }
     } else {
       stamina = Math.min(MAX_STAMINA, stamina + STAMINA_RECOVER_PER_SEC * dt);
@@ -2437,13 +2541,13 @@ function updatePlayer(dt: number): void {
   camera.rotation = new Vector3(pitch, yaw, 0);
 
   if (fireCooldown > 0) fireCooldown -= dt;
-  if (grenadeCooldown > 0) grenadeCooldown -= dt;
+  if (potionCooldown > 0) potionCooldown -= dt;
   if (!SERVER_AUTHORITATIVE_ONLY && !multiplayerSync && !gameOver && !victory) {
     mana = Math.min(MAX_MANA, mana + MANA_RECOVER_PER_SEC * dt);
   }
-  const flameActive = weaponMode === "flamethrower" && input.MouseLeft && !cheatOpen && flameFuel > 0;
-  updateFlameStreamVisual(flameActive);
-  if (input.MouseLeft && !cheatOpen && fireCooldown <= 0) fireWeapon();
+  const flameActive = runeMode === "inferno" && input.MouseLeft && !cheatOpen && infernoFuel > 0;
+  updateInfernoStreamVisual(flameActive);
+  if (input.MouseLeft && !cheatOpen && fireCooldown <= 0) fireRune();
 
   recoil = Math.max(0, recoil - dt * 0.75);
   if (gunRoot) {
@@ -2477,14 +2581,14 @@ function updatePortal(dt: number): void {
   }
 }
 
-function toggleWeapon(): void {
-  const modes: WeaponMode[] = ["gun"];
-  if (hasCannon) modes.push("cannon");
-  if (hasMinigun) modes.push("minigun");
-  if (hasFlamethrower && flameFuel > 0) modes.push("flamethrower");
-  const index = modes.indexOf(weaponMode);
-  weaponMode = modes[(index + 1) % modes.length];
-  if (weaponMode !== "flamethrower") stopFlameStream();
+function toggleRune(): void {
+  const modes: RuneMode[] = ["fireball"];
+  if (hasLightningBolt) modes.push("lightning-bolt");
+  if (hasIceShard) modes.push("ice-shard");
+  if (hasInferno && infernoFuel > 0) modes.push("inferno");
+  const index = modes.indexOf(runeMode);
+  runeMode = modes[(index + 1) % modes.length];
+  if (runeMode !== "inferno") stopInfernoStream();
   updateHud();
 }
 
@@ -2514,21 +2618,21 @@ function runCheat(raw: string): void {
   }
 
   if (cheat === "meow") {
-    hasMinigun = true;
-    weaponMode = "minigun";
+    hasIceShard = true;
+    runeMode = "ice-shard";
     mana = Math.min(MAX_MANA, mana + 100);
-    setCheatStatus("Minigun unlocked");
-    addCheatHistory("meow", "minigun");
+    setCheatStatus("Ice Shard unlocked");
+    addCheatHistory("meow", "ice-shard");
     updateHud();
     return;
   }
 
   if (cheat === "burn") {
-    hasFlamethrower = true;
-    flameFuel = FLAMETHROWER_MAX_FUEL;
-    weaponMode = "flamethrower";
-    setCheatStatus("Flamethrower unlocked");
-    addCheatHistory("burn", "flamethrower");
+    hasInferno = true;
+    infernoFuel = INFERNO_MAX_FUEL;
+    runeMode = "inferno";
+    setCheatStatus("Inferno unlocked");
+    addCheatHistory("burn", "inferno");
     updateHud();
     return;
   }
@@ -2544,8 +2648,6 @@ function runCheat(raw: string): void {
   if (cheat === "catnip") {
     health = maxHealth;
     mana = MAX_MANA;
-    grenades = 3;
-    smokeGrenades = 2;
     stamina = MAX_STAMINA;
     sprintExhausted = false;
     setCheatStatus("Health and mana maxed");
@@ -2573,8 +2675,8 @@ function runCheat(raw: string): void {
   if (cheat === "resetcheats") {
     speedBoost = false;
     godMode = false;
-    hasMinigun = false;
-    if (weaponMode === "minigun") weaponMode = hasCannon ? "cannon" : "gun";
+    hasIceShard = false;
+    if (runeMode === "ice-shard") runeMode = hasLightningBolt ? "lightning-bolt" : "fireball";
     setCheatStatus("Cheats reset");
     addCheatHistory("resetcheats", "off");
     updateHud();
@@ -2599,7 +2701,6 @@ function toggleCheatConsole(): void {
   if (cheatOpen) {
     if (document.pointerLockElement === canvas) document.exitPointerLock();
     pointerLocked = false;
-    setGrenadeChargeHud(false, 0);
     Object.keys(input).forEach((k) => {
       input[k as keyof InputState] = false;
     });
@@ -2611,9 +2712,33 @@ function toggleCheatConsole(): void {
   }
 }
 
+function useSelectedPotion(): void {
+  if (!multiplayerSync) return;
+  const kind = POTION_KINDS[selectedPotionIndex];
+  if (potionInventory[kind] <= 0) return;
+  if (kind === "poison" || kind === "freeze") {
+    // Compute target position for thrown potions
+    const THROW_DIST = 8;
+    const lookDir = camera.getDirection(new Vector3(0, 0, 1)).normalize();
+    const targetX = camera.position.x + lookDir.x * THROW_DIST;
+    const targetZ = camera.position.z + lookDir.z * THROW_DIST;
+    multiplayerSync.sendUsePotion(kind, targetX, targetZ);
+    // Launch cosmetic projectile for freeze only (poison uses server-synced cloud)
+    if (kind === "freeze") throwPotionProjectile(kind, 0.5);
+  } else {
+    multiplayerSync.sendUsePotion(kind);
+  }
+}
+
 function handleInputBindings(): void {
   window.addEventListener("keydown", (e) => {
     if (e.code === "Tab") {
+      e.preventDefault();
+      useSelectedPotion();
+      return;
+    }
+
+    if (e.code === "Backquote") {
       e.preventDefault();
       toggleCheatConsole();
       return;
@@ -2644,7 +2769,7 @@ function handleInputBindings(): void {
     }
 
     if (e.code === "KeyE") {
-      toggleWeapon();
+      toggleRune();
       return;
     }
 
@@ -2680,25 +2805,30 @@ function handleInputBindings(): void {
 
     if (e.button === 2) {
       e.preventDefault();
-      input.MouseRight = true;
-      grenadeChargeStart = performance.now();
     }
 
     if (e.button === 1) {
       e.preventDefault();
-      throwSmokeGrenade();
+      useSelectedPotion();
     }
   });
 
   window.addEventListener("mouseup", (e) => {
     if (e.button === 0) input.MouseLeft = false;
-    if (e.button === 2 && input.MouseRight) {
+    if (e.button === 2) {
       e.preventDefault();
-      input.MouseRight = false;
-      const heldSeconds = Math.max(0, (performance.now() - grenadeChargeStart) / 1000);
-      setGrenadeChargeHud(false, 0);
-      throwGrenade(heldSeconds);
     }
+  });
+
+  window.addEventListener("wheel", (e) => {
+    if (cheatOpen) return;
+    if (e.deltaY > 0) {
+      selectedPotionIndex = (selectedPotionIndex + 1) % POTION_KINDS.length;
+    } else if (e.deltaY < 0) {
+      selectedPotionIndex =
+        (selectedPotionIndex - 1 + POTION_KINDS.length) % POTION_KINDS.length;
+    }
+    updateHud();
   });
 
   canvas.addEventListener("contextmenu", (e) => {
@@ -2739,7 +2869,7 @@ function handleInputBindings(): void {
       return;
     }
 
-    if (e.code === "Escape" || e.code === "Tab") {
+    if (e.code === "Escape" || e.code === "Backquote") {
       e.preventDefault();
       toggleCheatConsole();
     }
@@ -2769,6 +2899,25 @@ function syncMultiplayerVitals(): void {
   const transform = multiplayerSync.getSelfTransform();
   health = Math.max(0, Math.min(maxHealth, vitals.hp));
   mana = Math.max(0, Math.min(MAX_MANA, Math.floor(vitals.mana)));
+
+  // Sync potion inventory
+  const potions = multiplayerSync.getPotionInventory();
+  potionInventory.health = potions.health;
+  potionInventory.mana = potions.mana;
+  potionInventory.poison = potions.poison;
+  potionInventory.speed = potions.speed;
+  potionInventory.freeze = potions.freeze;
+
+  isPlayerPoisoned = multiplayerSync.isSelfPoisoned();
+  const wasBoosted = isPlayerSpeedBoosted;
+  isPlayerSpeedBoosted = multiplayerSync.isSelfSpeedBoosted();
+  if (isPlayerSpeedBoosted && !wasBoosted) {
+    speedBoostStartedAt = performance.now();
+  } else if (!isPlayerSpeedBoosted) {
+    speedBoostStartedAt = 0;
+  }
+  isPlayerFrozen = multiplayerSync.isSelfFrozen();
+
   multiplayerRespawnSeconds = Math.max(0, Math.ceil(vitals.respawnIn));
   if (multiplayerRespawnSeconds > 0) {
     gameOver = true;
@@ -2841,13 +2990,6 @@ function gameLoop(now: number): void {
   const dt = Math.min(0.05, (now - lastTime) / 1000);
   lastTime = now;
 
-  if (input.MouseRight && !cheatOpen) {
-    const heldSeconds = Math.max(0, (performance.now() - grenadeChargeStart) / 1000);
-    setGrenadeChargeHud(true, Math.min(1, heldSeconds / 1.25));
-  } else {
-    setGrenadeChargeHud(false, 0);
-  }
-
   if (!cheatOpen) {
     updatePlayer(dt);
   }
@@ -2860,8 +3002,9 @@ function gameLoop(now: number): void {
       updateEnemyShots(dt);
       updatePickups(dt);
     }
-    updateGrenades(dt);
-    updateSmokeClouds(dt);
+    updateProjectiles(dt);
+    updateEffectClouds(dt);
+    syncPoisonCloudVisuals();
     updatePortal(dt);
 
     if (!SERVER_AUTHORITATIVE_ONLY && !multiplayerSync && !portalActive && enemies.filter((e) => e.health > 0).length === 0) {
@@ -2886,6 +3029,7 @@ async function init(): Promise<void> {
     multiplayerSync = new LegacyMultiplayerSync(scene, (status) => {
       setCheatStatus(status);
     });
+    multiplayerSync.onProjectileRemoved = (pos) => fireballImpact(pos);
     void multiplayerSync.connect();
   }
   startLevel(0, true);

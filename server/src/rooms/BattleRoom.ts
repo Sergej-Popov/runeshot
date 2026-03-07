@@ -1,5 +1,5 @@
-﻿import { Client, Room } from "colyseus";
-import { BattleState, Cat, Pickup, Player, Projectile } from "../state/BattleState.js";
+import { Client, Room } from "colyseus";
+import { BattleState, Cat, Pickup, Player, PoisonCloud, Projectile, POTION_KINDS, MAX_POTIONS_PER_KIND, type PotionKind } from "../state/BattleState.js";
 
 const ARENA_HALF_SIZE = 15;
 const BASE_SPEED = 5;
@@ -60,6 +60,22 @@ const PICKUP_RADIUS = 0.95;
 const MAX_PLAYER_MANA = 220;
 const MANA_RECOVER_PER_SEC = 0.75;
 const PORTAL_ACTIVATE_RADIUS = 1.4;
+
+// Potion effect constants
+const POTION_HEALTH_AMOUNT = 22;
+const POTION_MANA_AMOUNT = 50;
+const POISON_CLOUD_DURATION = 30;
+const POISON_CLOUD_RADIUS = 3;
+const POISON_DOT_DPS = 5;
+const POISON_DOT_DURATION = 10;
+const POISON_THROW_DIST = 8;
+const SPEED_BOOST_DURATION_SEC = 60;
+const SPEED_BOOST_MULTIPLIER = 1.6;
+const FREEZE_DURATION_SEC = 15;
+const FREEZE_RADIUS = 5;
+const FREEZE_SPEED_MULTIPLIER = 0.2;
+const FREEZE_PLAYER_SPEED_MULTIPLIER = 0.4;
+const FREEZE_THROW_DIST = 8;
 const CAT_SPAWN_MAP_POINTS = [
   { x: 2.6, y: 2.6 },
   { x: 13.2, y: 2.8 },
@@ -147,6 +163,11 @@ export class BattleRoom extends Room<BattleState> {
   private roomLevel = 0;
   private botsEnabled = true;
   private lobbyName = "main";
+  private readonly speedBoostUntil = new Map<string, number>();
+  private readonly frozenUntil = new Map<string, number>();
+  private readonly playerFrozenUntil = new Map<string, number>();
+  private cloudSeq = 0;
+  private readonly poisonState = new Map<string, { until: number; lastTick: number }>();
 
   override onCreate(options?: { lobby?: string; level?: number; bots?: boolean }): void {
     this.setState(new BattleState());
@@ -197,6 +218,14 @@ export class BattleRoom extends Room<BattleState> {
       this.tryAdvanceLevel(client.sessionId, player);
     });
 
+    this.onMessage("usePotion", (client, payload: { kind?: string; targetX?: number; targetZ?: number }) => {
+      const player = this.state.players.get(client.sessionId);
+      if (!player || player.hp <= 0) return;
+      const kind = payload?.kind;
+      if (!kind || !POTION_KINDS.includes(kind as PotionKind)) return;
+      this.usePotion(client.sessionId, player, kind as PotionKind, payload?.targetX, payload?.targetZ);
+    });
+
     this.setSimulationInterval((deltaTimeMs) => {
       const dt = deltaTimeMs / 1000;
       this.stepCooldowns(dt);
@@ -204,6 +233,7 @@ export class BattleRoom extends Room<BattleState> {
       if (this.botsEnabled) this.stepCats(dt);
       this.stepProjectiles(dt);
       this.stepPickups();
+      this.stepPoisonClouds(dt);
     });
   }
 
@@ -231,6 +261,9 @@ export class BattleRoom extends Room<BattleState> {
     this.fireCooldowns.delete(client.sessionId);
     this.lastPoseAt.delete(client.sessionId);
     this.respawnAt.delete(client.sessionId);
+    this.speedBoostUntil.delete(client.sessionId);
+    this.playerFrozenUntil.delete(client.sessionId);
+    this.poisonState.delete(`player:${client.sessionId}`);
     this.state.players.delete(client.sessionId);
     this.removeProjectilesByOwner(client.sessionId);
     this.debug("leave", { sessionId: client.sessionId, players: this.state.players.size });
@@ -252,13 +285,46 @@ export class BattleRoom extends Room<BattleState> {
   }
 
   private stepPlayers(dt: number): void {
+    const now = Date.now();
     for (const [sessionId, player] of this.state.players.entries()) {
       if (player.hp <= 0) {
+        // Clear poison when dead
+        const poisonKey = `player:${sessionId}`;
+        if (this.poisonState.has(poisonKey)) {
+          this.poisonState.delete(poisonKey);
+          player.poisoned = false;
+        }
         this.stepRespawn(sessionId, player);
         continue;
       }
 
-      const poseAgeMs = Date.now() - (this.lastPoseAt.get(sessionId) ?? 0);
+      // Apply poison tick damage
+      const poisonKey = `player:${sessionId}`;
+      const poison = this.poisonState.get(poisonKey);
+      if (poison) {
+        if (now >= poison.until) {
+          this.poisonState.delete(poisonKey);
+          player.poisoned = false;
+        } else {
+          player.poisoned = true;
+          const elapsed = (now - poison.lastTick) / 1000;
+          if (elapsed >= 1) {
+            const ticks = Math.floor(elapsed);
+            player.hp = Math.max(0, player.hp - POISON_DOT_DPS * ticks);
+            poison.lastTick = now;
+            if (player.hp <= 0) {
+              this.poisonState.delete(poisonKey);
+              player.poisoned = false;
+              if (!this.respawnAt.has(sessionId)) {
+                this.scheduleRespawn(sessionId, player);
+              }
+              continue;
+            }
+          }
+        }
+      }
+
+      const poseAgeMs = now - (this.lastPoseAt.get(sessionId) ?? 0);
       if (poseAgeMs < 250) continue;
 
       const input = this.inputs.get(sessionId);
@@ -267,7 +333,13 @@ export class BattleRoom extends Room<BattleState> {
       player.rotY += input.turn * TURN_SPEED * dt;
 
       const move = normalize2D(input.strafe, input.forward);
-      const speed = input.sprint ? SPRINT_SPEED : BASE_SPEED;
+      const hasSpeedBoost = (this.speedBoostUntil.get(sessionId) ?? 0) > now;
+      if (!hasSpeedBoost && player.speedBoosted) player.speedBoosted = false;
+      const isPlayerFrozen = (this.playerFrozenUntil.get(sessionId) ?? 0) > now;
+      if (!isPlayerFrozen && player.frozen) player.frozen = false;
+      const baseSpeed = (input.sprint && !isPlayerFrozen) ? SPRINT_SPEED : BASE_SPEED;
+      let speed = hasSpeedBoost ? baseSpeed * SPEED_BOOST_MULTIPLIER : baseSpeed;
+      if (isPlayerFrozen) speed *= FREEZE_PLAYER_SPEED_MULTIPLIER;
       const sin = Math.sin(player.rotY);
       const cos = Math.cos(player.rotY);
       const worldX = move.x * cos + move.z * sin;
@@ -368,10 +440,35 @@ export class BattleRoom extends Room<BattleState> {
   }
 
   private stepCats(dt: number): void {
+    const now = Date.now();
     const players = Array.from(this.state.players.entries())
       .filter(([, player]) => player.hp > 0)
       .map(([sessionId, player]) => ({ sessionId, player }));
     for (const [catId, cat] of this.state.cats.entries()) {
+      // Apply poison tick damage to cats
+      const poisonKey = `cat:${catId}`;
+      const poison = this.poisonState.get(poisonKey);
+      if (poison) {
+        if (now >= poison.until) {
+          this.poisonState.delete(poisonKey);
+        } else {
+          const elapsed = (now - poison.lastTick) / 1000;
+          if (elapsed >= 1) {
+            const ticks = Math.floor(elapsed);
+            cat.hp = Math.max(0, cat.hp - POISON_DOT_DPS * ticks);
+            poison.lastTick = now;
+            if (cat.hp <= 0) {
+              this.poisonState.delete(poisonKey);
+              this.state.cats.delete(catId);
+              this.catBrains.delete(catId);
+              this.removeProjectilesByOwner(`cat:${catId}`);
+              this.checkPortalUnlock();
+              continue;
+            }
+          }
+        }
+      }
+
       const brain = this.catBrains.get(catId);
       if (!brain) continue;
 
@@ -435,7 +532,9 @@ export class BattleRoom extends Room<BattleState> {
 
       const facingDelta = Math.abs(normalizeAngle(brain.desiredYaw - cat.rotY));
       const facingScale = clamp((Math.cos(facingDelta) + 0.35) / 1.35, 0.2, 1);
-      const speed = (cat.type === "boss" || cat.type === "red" ? CAT_BASE_SPEED * 0.93 : CAT_BASE_SPEED) * facingScale;
+      const rawSpeed = (cat.type === "boss" || cat.type === "red" ? CAT_BASE_SPEED * 0.93 : CAT_BASE_SPEED) * facingScale;
+      const isFrozen = (this.frozenUntil.get(catId) ?? 0) > Date.now();
+      const speed = isFrozen ? rawSpeed * FREEZE_SPEED_MULTIPLIER : rawSpeed;
       const forwardX = Math.sin(cat.rotY);
       const forwardZ = Math.cos(cat.rotY);
       cat.x = clamp(cat.x + forwardX * speed * dt, -ARENA_HALF_SIZE, ARENA_HALF_SIZE);
@@ -525,6 +624,10 @@ export class BattleRoom extends Room<BattleState> {
   ): void {
     const range = cat.type === "boss" || cat.type === "red" ? CAT_FIRE_RANGE_BOSS : CAT_FIRE_RANGE_NORMAL;
     if (brain.shootIn > 0 || distance > range) return;
+
+    // Frozen cats cannot shoot
+    const isFrozen = (this.frozenUntil.get(catId) ?? 0) > Date.now();
+    if (isFrozen) return;
 
     const facingX = Math.sin(cat.rotY);
     const facingZ = Math.cos(cat.rotY);
@@ -681,6 +784,13 @@ export class BattleRoom extends Room<BattleState> {
     this.catBrains.clear();
     this.state.projectiles.clear();
     this.state.pickups.clear();
+    this.state.clouds.clear();
+    this.poisonState.clear();
+
+    // Clear poisoned flag on all living players
+    for (const player of this.state.players.values()) {
+      player.poisoned = false;
+    }
 
     if (this.botsEnabled) this.seedCats();
     this.seedPickups();
@@ -751,17 +861,40 @@ export class BattleRoom extends Room<BattleState> {
   private seedPickups(): void {
     const healthCount = Math.max(2, 3 + Math.floor(this.roomLevel / 2) + (this.roomLevel === 3 ? 2 : 0));
     const manaCount = 4;
+    const poisonCount = Math.max(1, 1 + Math.floor(this.roomLevel / 3));
+    const speedCount = Math.max(1, 1 + Math.floor(this.roomLevel / 3));
+    const freezeCount = Math.max(1, 1 + Math.floor(this.roomLevel / 3));
+
+    let pointIndex = 0;
+    const nextPoint = (): { x: number; y: number; z: number } => {
+      const point = PICKUP_MAP_POINTS[(pointIndex + this.roomLevel) % PICKUP_MAP_POINTS.length];
+      pointIndex += 1;
+      return this.mapToWorld(point.x, point.y, 0.4);
+    };
 
     for (let i = 0; i < healthCount; i += 1) {
-      const point = PICKUP_MAP_POINTS[(i + this.roomLevel) % PICKUP_MAP_POINTS.length];
-      const world = this.mapToWorld(point.x, point.y, 0.4);
-      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("health", world.x, world.y, world.z, 22));
+      const world = nextPoint();
+      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("health", world.x, world.y, world.z, POTION_HEALTH_AMOUNT));
     }
 
     for (let i = 0; i < manaCount; i += 1) {
-      const point = PICKUP_MAP_POINTS[(i + this.roomLevel * 2 + 3) % PICKUP_MAP_POINTS.length];
-      const world = this.mapToWorld(point.x, point.y, 0.4);
-      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("mana", world.x, world.y, world.z, 50));
+      const world = nextPoint();
+      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("mana", world.x, world.y, world.z, POTION_MANA_AMOUNT));
+    }
+
+    for (let i = 0; i < poisonCount; i += 1) {
+      const world = nextPoint();
+      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("poison", world.x, world.y, world.z, POISON_DOT_DPS));
+    }
+
+    for (let i = 0; i < speedCount; i += 1) {
+      const world = nextPoint();
+      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("speed", world.x, world.y, world.z, SPEED_BOOST_DURATION_SEC));
+    }
+
+    for (let i = 0; i < freezeCount; i += 1) {
+      const world = nextPoint();
+      this.state.pickups.set(`pickup-${++this.pickupSeq}`, new Pickup("freeze", world.x, world.y, world.z, FREEZE_DURATION_SEC));
     }
 
     this.debug("pickups seeded", { pickups: this.state.pickups.size });
@@ -776,13 +909,12 @@ export class BattleRoom extends Room<BattleState> {
         const d2 = dx * dx + dz * dz;
         if (d2 > PICKUP_RADIUS * PICKUP_RADIUS) continue;
 
-        const consumed = this.applyPickup(player, pickup);
-        if (consumed) {
+        const collected = this.collectPickup(player, pickup);
+        if (collected) {
           this.state.pickups.delete(pickupId);
           this.debug("pickup collected", {
             pickupId,
             kind: pickup.kind,
-            amount: pickup.amount,
             player: player.name,
           });
         }
@@ -791,20 +923,144 @@ export class BattleRoom extends Room<BattleState> {
     }
   }
 
-  private applyPickup(player: Player, pickup: Pickup): boolean {
-    if (pickup.kind === "health") {
-      if (player.hp >= 100) return false;
-      player.hp = Math.min(100, player.hp + pickup.amount);
-      return true;
+  private collectPickup(player: Player, pickup: Pickup): boolean {
+    const kind = pickup.kind;
+    if (!POTION_KINDS.includes(kind as PotionKind)) return false;
+    const current = player.getPotionCount(kind as PotionKind);
+    if (current >= MAX_POTIONS_PER_KIND) return false;
+    player.setPotionCount(kind as PotionKind, current + 1);
+    return true;
+  }
+
+  private usePotion(sessionId: string, player: Player, kind: PotionKind, targetX?: number, targetZ?: number): void {
+    const count = player.getPotionCount(kind);
+    if (count <= 0) return;
+
+    let used = false;
+    switch (kind) {
+      case "health":
+        if (player.hp >= 100) return;
+        player.hp = Math.min(100, player.hp + POTION_HEALTH_AMOUNT);
+        // Drinking a health potion clears poison
+        {
+          const poisonKey = `player:${sessionId}`;
+          if (this.poisonState.has(poisonKey)) {
+            this.poisonState.delete(poisonKey);
+            player.poisoned = false;
+          }
+        }
+        used = true;
+        break;
+
+      case "mana":
+        if (player.mana >= MAX_PLAYER_MANA) return;
+        player.mana = Math.min(MAX_PLAYER_MANA, player.mana + POTION_MANA_AMOUNT);
+        used = true;
+        break;
+
+      case "poison": {
+        // Throw a poison cloud at the target position
+        const tx = Number.isFinite(targetX) ? Number(targetX) : player.x;
+        const tz = Number.isFinite(targetZ) ? Number(targetZ) : player.z;
+        const cx = clamp(tx, -ARENA_HALF_SIZE, ARENA_HALF_SIZE);
+        const cz = clamp(tz, -ARENA_HALF_SIZE, ARENA_HALF_SIZE);
+        const cloud = new PoisonCloud(cx, 0, cz, POISON_CLOUD_DURATION);
+        this.state.clouds.set(`cloud-${++this.cloudSeq}`, cloud);
+        this.debug("poison cloud spawned", { sessionId, x: cx, z: cz });
+        used = true;
+        break;
+      }
+
+      case "speed":
+        this.speedBoostUntil.set(sessionId, Date.now() + SPEED_BOOST_DURATION_SEC * 1000);
+        player.speedBoosted = true;
+        used = true;
+        break;
+
+      case "freeze": {
+        // Freeze is thrown as a grenade — compute blast center from target coords
+        const fx = targetX ?? player.x;
+        const fz = targetZ ?? player.z;
+        const now = Date.now();
+        const freezeUntil = now + FREEZE_DURATION_SEC * 1000;
+        const fr2 = FREEZE_RADIUS * FREEZE_RADIUS;
+
+        // Freeze cats in blast radius
+        for (const [catId, cat] of this.state.cats.entries()) {
+          if (cat.hp <= 0) continue;
+          const dx = cat.x - fx;
+          const dz = cat.z - fz;
+          if (dx * dx + dz * dz > fr2) continue;
+          this.frozenUntil.set(catId, freezeUntil);
+        }
+
+        // Freeze players in blast radius (including self)
+        for (const [sid, p] of this.state.players.entries()) {
+          if (p.hp <= 0) continue;
+          const dx = p.x - fx;
+          const dz = p.z - fz;
+          if (dx * dx + dz * dz > fr2) continue;
+          this.playerFrozenUntil.set(sid, freezeUntil);
+          p.frozen = true;
+        }
+
+        this.debug("freeze blast", { sessionId, x: fx, z: fz });
+        used = true;
+        break;
+      }
     }
 
-    if (pickup.kind === "mana") {
-      if (player.mana >= MAX_PLAYER_MANA) return false;
-      player.mana = Math.min(MAX_PLAYER_MANA, player.mana + pickup.amount);
-      return true;
+    if (used) {
+      player.setPotionCount(kind, count - 1);
+      this.debug("potion used", { sessionId, kind, remaining: count - 1 });
     }
+  }
 
-    return false;
+  private stepPoisonClouds(dt: number): void {
+    const now = Date.now();
+    const r2 = POISON_CLOUD_RADIUS * POISON_CLOUD_RADIUS;
+
+    for (const [cloudId, cloud] of this.state.clouds.entries()) {
+      cloud.life -= dt;
+      if (cloud.life <= 0) {
+        this.state.clouds.delete(cloudId);
+        continue;
+      }
+
+      // Apply/refresh poison to players inside the cloud
+      for (const [sessionId, player] of this.state.players.entries()) {
+        if (player.hp <= 0) continue;
+        const dx = player.x - cloud.x;
+        const dz = player.z - cloud.z;
+        if (dx * dx + dz * dz > r2) continue;
+        const poisonKey = `player:${sessionId}`;
+        const existing = this.poisonState.get(poisonKey);
+        const until = now + POISON_DOT_DURATION * 1000;
+        if (existing) {
+          // Refresh duration while inside cloud
+          existing.until = until;
+        } else {
+          this.poisonState.set(poisonKey, { until, lastTick: now });
+          player.poisoned = true;
+        }
+      }
+
+      // Apply/refresh poison to cats inside the cloud
+      for (const [catId, cat] of this.state.cats.entries()) {
+        if (cat.hp <= 0) continue;
+        const dx = cat.x - cloud.x;
+        const dz = cat.z - cloud.z;
+        if (dx * dx + dz * dz > r2) continue;
+        const poisonKey = `cat:${catId}`;
+        const existing = this.poisonState.get(poisonKey);
+        const until = now + POISON_DOT_DURATION * 1000;
+        if (existing) {
+          existing.until = until;
+        } else {
+          this.poisonState.set(poisonKey, { until, lastTick: now });
+        }
+      }
+    }
   }
 
   private mapToWorld(mx: number, my: number, y = 0): { x: number; y: number; z: number } {
