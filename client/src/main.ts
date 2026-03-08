@@ -84,8 +84,6 @@ import {
 import {
   cellKindForLevel,
   LEVELS,
-  PIT_FLOOR_HEIGHT,
-  MAP,
   enemyCountForLevel,
   floorHeightForLevel,
   isWallForLevel,
@@ -95,168 +93,65 @@ import {
 import { SERVER_AUTHORITATIVE_ONLY } from "./game/featureFlags";
 import { animatePickupVisual, createPickupVisual, disposePickupVisual, type PickupVisual, type PickupVisualKind } from "./game/pickupVisuals";
 import { LegacyMultiplayerSync } from "./multiplayer/legacySync";
+import { computeDeltaSeconds } from "./app/loop";
+import {
+  EYE_HEIGHT,
+  FREEZE_DURATION,
+  GRAVITY,
+  INFERNO_MAX_FUEL,
+  MANA_RECOVER_PER_SEC,
+  MAP_H,
+  MAP_W,
+  MAX_MANA,
+  MAX_STAMINA,
+  MINIMAP_SIZES,
+  PICKUP_POINTS,
+  PIT_DEPTH,
+  PLAYER_RADIUS,
+  SPAWN_POINTS,
+  SPEED_BOOST_DURATION,
+  SPEED_BOOST_MULT,
+  SPRINT_SPEED,
+  STAMINA_DRAIN_PER_SEC,
+  STAMINA_RECOVER_PER_SEC,
+  STAMINA_RECOVER_UNLOCK,
+  TILE_SIZE,
+  TRAMPOLINE_RADIUS,
+  WALK_SPEED,
+  WALL_HEIGHT,
+  JUMP_VELOCITY,
+} from "./game/runtime/constants";
+import { nextRuneMode, runeDisplayName } from "./game/runtime/runes";
+import { freezeRecoveryFraction } from "./game/runtime/freezeIndicator";
+import {
+  mapCellCenterWorld as mapCellCenterWorldBase,
+  mapKey as mapKeyBase,
+  mapToWorld as mapToWorldBase,
+  normalizeAngle as normalizeAngleBase,
+  parseMapKey as parseMapKeyBase,
+  rotateY as rotateYBase,
+  worldToMap as worldToMapBase,
+} from "./game/runtime/spatial";
+import {
+  createDefaultInputState,
+  POTION_KINDS,
+  type CastProjectile,
+  type EffectCloud,
+  type EnemyEntity,
+  type EnemyShot,
+  type EnemyType,
+  type ImpactBurst,
+  type InfernoStream,
+  type InputState,
+  type Pickup,
+  type PickupKind,
+  type PoisonCloudVisual,
+  type PotionKind,
+  type PotionProjectile,
+  type RuneMode,
+} from "./game/runtime/types";
 
-type RuneMode = "fireball" | "lightning-bolt" | "ice-shard" | "inferno";
-type EnemyType = "normal" | "boss" | "kitten";
-
-type EnemyEntity = {
-  mesh: TransformNode;
-  type: EnemyType;
-  health: number;
-  maxHealth: number;
-  speed: number;
-  meleeDamage: number;
-  meleeCooldown: number;
-  shootCooldown: number;
-  shootDelay: number;
-  bulletSpeed: number;
-  rangedDamage: number;
-  spawnCooldown: number;
-  aiMode: "push" | "strafe" | "flank" | "retreat" | "hide" | "roam";
-  aiTimer: number;
-  aiTarget: Vector3 | null;
-  lastSeenPlayer: Vector3 | null;
-  strafeDir: 1 | -1;
-  runAnimation: AnimationGroup | null;
-  wasMoving: boolean;
-};
-
-type EnemyShot = {
-  mesh: Mesh;
-  velocity: Vector3;
-  life: number;
-  damage: number;
-};
-
-type PickupKind = "health" | "mana" | "flame";
-type Pickup = {
-  kind: PickupKind;
-  amount: number;
-  visual: PickupVisual;
-};
-
-type PotionProjectile = {
-  mesh: Mesh;
-  velocity: Vector3;
-  life: number;
-  bouncesRemaining: number;
-  kind: "freeze";
-};
-
-type CastProjectile = {
-  mesh: Mesh;
-  light: PointLight;
-  velocity: Vector3;
-  life: number;
-};
-
-type ImpactBurst = {
-  mesh: Mesh;
-  light: PointLight;
-  life: number;
-  flashLife: number;
-  radius: number;
-  systems: ParticleSystem[];
-  cleanupAt: number;
-  stopped: boolean;
-};
-
-type EffectCloud = {
-  systems: ParticleSystem[];
-  life: number;
-  cleanupAt: number;
-  stopped: boolean;
-};
-
-type PoisonCloudVisual = {
-  systems: ParticleSystem[];
-  light: PointLight;
-};
-
-type InfernoStream = {
-  nozzle: Mesh;
-  core: ParticleSystem;
-  smoke: ParticleSystem;
-  embers: ParticleSystem;
-};
-
-type InputState = {
-  KeyW: boolean;
-  KeyA: boolean;
-  KeyS: boolean;
-  KeyD: boolean;
-  ShiftLeft: boolean;
-  ShiftRight: boolean;
-  ArrowLeft: boolean;
-  ArrowRight: boolean;
-  Space: boolean;
-  MouseLeft: boolean;
-  MouseRight: boolean;
-};
-
-const TILE_SIZE = 2;
-const MAP_W = MAP[0].length;
-const MAP_H = MAP.length;
-const EYE_HEIGHT = 1.35;
-const WALL_HEIGHT = 3.8;
-const PLAYER_RADIUS = 0.22;
-const GRAVITY = 19;
-const JUMP_VELOCITY = 8.2;
-const WALK_SPEED = 4.2;
-const SPRINT_SPEED = 5.7 * 1.3;
-const SPEED_BOOST_MULT = 1.2;
-const MAX_STAMINA = 5;
-const STAMINA_DRAIN_PER_SEC = 1;
-const STAMINA_RECOVER_PER_SEC = 1;
-const STAMINA_RECOVER_UNLOCK = 1.5;
-const MAX_MANA = 220;
-const MANA_RECOVER_PER_SEC = 0.75;
-const INFERNO_MAX_FUEL = 220;
-const PIT_DEPTH = PIT_FLOOR_HEIGHT;
-const MINIMAP_SIZES = [150, 190, 230];
-const TRAMPOLINE_RADIUS = TILE_SIZE * 0.27;
-
-const SPAWN_POINTS = [
-  { x: 11.5, y: 10.5 },
-  { x: 12.5, y: 3.5 },
-  { x: 8.5, y: 12.5 },
-  { x: 4.5, y: 9.5 },
-  { x: 3.5, y: 5.5 },
-  { x: 6.5, y: 2.5 },
-  { x: 10.5, y: 6.5 },
-  { x: 13.2, y: 11.2 },
-  { x: 9.5, y: 4.5 },
-  { x: 5.5, y: 13.2 },
-  { x: 2.8, y: 10.8 },
-  { x: 12.8, y: 8.2 },
-];
-
-const PICKUP_POINTS = [
-  { x: 3.2, y: 3.2 },
-  { x: 6.8, y: 3.4 },
-  { x: 10.8, y: 3.6 },
-  { x: 13.0, y: 6.0 },
-  { x: 12.6, y: 10.6 },
-  { x: 9.2, y: 12.6 },
-  { x: 5.0, y: 12.8 },
-  { x: 3.0, y: 9.6 },
-  { x: 7.8, y: 8.0 },
-  { x: 11.5, y: 7.8 },
-];
-
-const input: InputState = {
-  KeyW: false,
-  KeyA: false,
-  KeyS: false,
-  KeyD: false,
-  ShiftLeft: false,
-  ShiftRight: false,
-  ArrowLeft: false,
-  ArrowRight: false,
-  Space: false,
-  MouseLeft: false,
-  MouseRight: false,
-};
+const input: InputState = createDefaultInputState();
 
 const engine = new Engine(canvas, true);
 engine.disableUniformBuffers = true; // Bypass WebGL2 UBO limit (~12) — avoids shader failures when many PointLights exist
@@ -458,15 +353,13 @@ let multiplayerRespawnSeconds = 0;
 let multiplayerWasDowned = false;
 
 // Potion inventory state
-const POTION_KINDS = ["health", "mana", "poison", "speed", "freeze"] as const;
-type PotionKind = (typeof POTION_KINDS)[number];
 const potionInventory: Record<PotionKind, number> = { health: 0, mana: 0, poison: 0, speed: 0, freeze: 0 };
 let selectedPotionIndex = 0;
 let isPlayerPoisoned = false;
 let isPlayerSpeedBoosted = false;
 let isPlayerFrozen = false;
 let speedBoostStartedAt = 0;          // performance.now() timestamp when speed boost began
-const SPEED_BOOST_DURATION = 60_000;  // 60 seconds in ms (matches server)
+let freezeStartedAt = 0;
 const poisonCloudVisuals = new Map<string, PoisonCloudVisual>();
 
 function tryAcquirePointerLock(): void {
@@ -479,14 +372,11 @@ function tryAcquirePointerLock(): void {
 }
 
 function mapToWorld(mx: number, my: number, y = 0): Vector3 {
-  return new Vector3((mx - MAP_W / 2) * TILE_SIZE, y, (my - MAP_H / 2) * TILE_SIZE);
+  return mapToWorldBase(mx, my, MAP_W, MAP_H, TILE_SIZE, y);
 }
 
 function worldToMap(pos: Vector3): { x: number; y: number } {
-  return {
-    x: pos.x / TILE_SIZE + MAP_W / 2,
-    y: pos.z / TILE_SIZE + MAP_H / 2,
-  };
+  return worldToMapBase(pos, MAP_W, MAP_H, TILE_SIZE);
 }
 
 function isWallAt(mx: number, my: number): boolean {
@@ -554,18 +444,21 @@ function updateHud(): void {
   staminaBarEl.style.width = `${staminaPct}%`;
   staminaBarEl.classList.toggle("speed-boosted", isPlayerSpeedBoosted);
   staminaBarEl.classList.toggle("frozen", isPlayerFrozen);
+  if (isPlayerFrozen) {
+    if (freezeStartedAt <= 0) freezeStartedAt = performance.now();
+    const recovered = freezeRecoveryFraction(performance.now(), freezeStartedAt, FREEZE_DURATION);
+    const yellowPct = Math.round(recovered * 1000) / 10;
+    staminaBarEl.style.background =
+      `linear-gradient(90deg, #c8a820 0%, #e8d44a ${yellowPct}%, #36a8ff ${yellowPct}%, #6ce7ff 100%)`;
+  } else {
+    staminaBarEl.style.background = "";
+  }
   levelEl.textContent = multiplayerRespawnSeconds > 0
     ? `Respawn: ${multiplayerRespawnSeconds}s`
     : `Level: ${currentLevel + 1}/${LEVELS.length}`;
   manaTextEl.textContent = `Mana: ${Math.floor(mana)}/${MAX_MANA}`;
   manaBarEl.style.width = `${Math.max(0, Math.min(100, (mana / MAX_MANA) * 100))}%`;
-  const RUNE_DISPLAY_NAMES: Record<RuneMode, string> = {
-    "fireball": "Fireball",
-    "lightning-bolt": "Lightning Bolt",
-    "ice-shard": "Ice Shard",
-    "inferno": `Inferno (${Math.max(0, Math.ceil(infernoFuel))})`,
-  };
-  runeEl.textContent = `Rune: ${RUNE_DISPLAY_NAMES[runeMode]}`;
+  runeEl.textContent = `Rune: ${runeDisplayName(runeMode, infernoFuel)}`;
 
   const alive = enemies.filter((e) => e.health > 0).length;
   if (multiplayerSync) {
@@ -2090,10 +1983,7 @@ function resolveEnemySpawnPosition(
 }
 
 function normalizeAngle(a: number): number {
-  let out = a;
-  while (out > Math.PI) out -= Math.PI * 2;
-  while (out < -Math.PI) out += Math.PI * 2;
-  return out;
+  return normalizeAngleBase(a);
 }
 
 function rotateEnemyToward(enemy: EnemyEntity, dir: Vector3, dt: number, speed = 6.4): void {
@@ -2146,16 +2036,15 @@ function tryMoveEnemy(enemy: EnemyEntity, moveDir: Vector3, amount: number): boo
 }
 
 function mapCellCenterWorld(cx: number, cy: number, y = 0): Vector3 {
-  return mapToWorld(cx + 0.5, cy + 0.5, y);
+  return mapCellCenterWorldBase(cx, cy, MAP_W, MAP_H, TILE_SIZE, y);
 }
 
 function mapKey(x: number, y: number): string {
-  return `${x},${y}`;
+  return mapKeyBase(x, y);
 }
 
 function parseMapKey(key: string): { x: number; y: number } {
-  const [x, y] = key.split(",").map((v) => Number(v));
-  return { x, y };
+  return parseMapKeyBase(key);
 }
 
 function isEnemyWalkableCell(x: number, y: number, r: number): boolean {
@@ -2245,9 +2134,7 @@ function findEnemyPathWaypoint(enemy: EnemyEntity, targetWorld: Vector3): Vector
 }
 
 function rotateY(dir: Vector3, angle: number): Vector3 {
-  const c = Math.cos(angle);
-  const s = Math.sin(angle);
-  return new Vector3(dir.x * c - dir.z * s, 0, dir.x * s + dir.z * c);
+  return rotateYBase(dir, angle);
 }
 
 function computeEnemySteerDirection(enemy: EnemyEntity, desiredTarget: Vector3): Vector3 {
@@ -2812,12 +2699,12 @@ function updatePortal(dt: number): void {
 }
 
 function toggleRune(): void {
-  const modes: RuneMode[] = ["fireball"];
-  if (hasLightningBolt) modes.push("lightning-bolt");
-  if (hasIceShard) modes.push("ice-shard");
-  if (hasInferno && infernoFuel > 0) modes.push("inferno");
-  const index = modes.indexOf(runeMode);
-  runeMode = modes[(index + 1) % modes.length];
+  runeMode = nextRuneMode(runeMode, {
+    hasLightningBolt,
+    hasIceShard,
+    hasInferno,
+    infernoFuel,
+  });
   if (runeMode !== "inferno") stopInfernoStream();
   updateHud();
 }
@@ -3152,7 +3039,13 @@ function syncMultiplayerVitals(): void {
   } else if (!isPlayerSpeedBoosted) {
     speedBoostStartedAt = 0;
   }
+  const wasFrozen = isPlayerFrozen;
   isPlayerFrozen = multiplayerSync.isSelfFrozen();
+  if (isPlayerFrozen && !wasFrozen) {
+    freezeStartedAt = performance.now();
+  } else if (!isPlayerFrozen) {
+    freezeStartedAt = 0;
+  }
 
   multiplayerRespawnSeconds = Math.max(0, Math.ceil(vitals.respawnIn));
   if (multiplayerRespawnSeconds > 0) {
@@ -3223,7 +3116,7 @@ function updateServerDebugPanel(): void {
 }
 
 function gameLoop(now: number): void {
-  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  const dt = computeDeltaSeconds(now, lastTime);
   lastTime = now;
 
   if (!cheatOpen) {
