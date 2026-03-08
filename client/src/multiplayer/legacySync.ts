@@ -138,6 +138,8 @@ type CatVisual = {
 type ProjectileVisual = {
   mesh: Mesh;
   trail: ParticleSystem;
+  spawnBlendUntil: number;
+  spawnOrigin: Vector3 | null;
 };
 
 export type ServerDebugInfo = {
@@ -225,7 +227,11 @@ export class LegacyMultiplayerSync {
 
   onProjectileRemoved: ((position: Vector3) => void) | null = null;
 
-  constructor(private readonly scene: Scene, private readonly setStatus: (status: string) => void) {
+  constructor(
+    private readonly scene: Scene,
+    private readonly setStatus: (status: string) => void,
+    private readonly getLocalMuzzlePosition?: () => Vector3 | null,
+  ) {
     this.serverLevel = this.levelIndex;
   }
 
@@ -698,6 +704,8 @@ export class LegacyMultiplayerSync {
   }
 
   private upsertProjectile(projectileId: string, projectile: SchemaProjectile): void {
+    const now = performance.now();
+    const targetPos = new Vector3(projectile.x, projectile.y, projectile.z);
     let visual = this.projectileVisuals.get(projectileId);
     if (!visual) {
       // --- Glowing fireball sphere ---
@@ -737,10 +745,25 @@ export class LegacyMultiplayerSync {
       trail.updateSpeed = 0.015;
       trail.start();
 
-      visual = { mesh, trail };
+      const isLocalShot = Boolean(this.selfSessionId && projectile.ownerId === this.selfSessionId);
+      const spawnOrigin = isLocalShot ? this.getLocalMuzzlePosition?.() ?? null : null;
+
+      visual = {
+        mesh,
+        trail,
+        spawnBlendUntil: spawnOrigin ? now + 120 : 0,
+        spawnOrigin,
+      };
       this.projectileVisuals.set(projectileId, visual);
     }
-    visual.mesh.position.copyFrom(new Vector3(projectile.x, projectile.y, projectile.z));
+
+    if (visual.spawnOrigin && now < visual.spawnBlendUntil) {
+      const blend = Math.max(0, Math.min(1, (visual.spawnBlendUntil - now) / 120));
+      visual.mesh.position.copyFrom(Vector3.Lerp(targetPos, visual.spawnOrigin, blend));
+    } else {
+      visual.spawnOrigin = null;
+      visual.mesh.position.copyFrom(targetPos);
+    }
   }
 
   private removeProjectile(projectileId: string, silent = false): void {

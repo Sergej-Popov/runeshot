@@ -406,8 +406,8 @@ let enemyModelHeight = 1;
 let enemyModelId = 0;
 let portalMesh: Mesh | null = null;
 let handsRoot: TransformNode | null = null;
+let leftHandWaveNode: TransformNode | null = null;
 let rightHandWaveNode: TransformNode | null = null;
-let rightHandMuzzle: TransformNode | null = null;
 let gunBobTime = 0;
 let recoil = 0;
 let rightHandWaveTime = 0;
@@ -420,6 +420,8 @@ const handRigDebug = {
   rotY: 0,
   rotZ: 3.16,
 };
+const LEFT_HAND_ANCHOR_POS = new Vector3(-0.3, -0.06, 0.08);
+const RIGHT_HAND_ANCHOR_POS = new Vector3(0.3, -0.06, 0.08);
 
 let currentLevel = 0;
 let health = 100;
@@ -760,6 +762,24 @@ function applyHandsRigTransform(bobOffset = 0, recoilOffset = 0): void {
   handsRoot.rotation.set(handRigDebug.rotX, handRigDebug.rotY, handRigDebug.rotZ);
 }
 
+function getActiveCastHandNode(): TransformNode | null {
+  if (leftHandWaveNode && rightHandWaveNode) {
+    const invCam = camera.getWorldMatrix().clone().invert();
+    const leftCam = Vector3.TransformCoordinates(leftHandWaveNode.getAbsolutePosition(), invCam);
+    const rightCam = Vector3.TransformCoordinates(rightHandWaveNode.getAbsolutePosition(), invCam);
+    return rightCam.x >= leftCam.x ? rightHandWaveNode : leftHandWaveNode;
+  }
+  return rightHandWaveNode ?? leftHandWaveNode;
+}
+
+function getCastMuzzlePosition(): Vector3 | null {
+  const castHand = getActiveCastHandNode();
+  if (!castHand) return null;
+  const handPos = castHand.getAbsolutePosition();
+  const dir = camera.getDirection(new Vector3(0.02, -0.04, 1)).normalize();
+  return handPos.add(dir.scale(0.58));
+}
+
 async function makeHandModels(): Promise<void> {
   if (handsRoot) handsRoot.dispose(false, true);
 
@@ -767,17 +787,13 @@ async function makeHandModels(): Promise<void> {
   handsRoot.parent = camera;
   applyHandsRigTransform();
 
-  const leftAnchor = new TransformNode("left-hand-anchor", scene);
-  leftAnchor.parent = handsRoot;
-  leftAnchor.position = new Vector3(-0.3, -0.06, 0.08);
+  leftHandWaveNode = new TransformNode("left-hand-anchor", scene);
+  leftHandWaveNode.parent = handsRoot;
+  leftHandWaveNode.position.copyFrom(LEFT_HAND_ANCHOR_POS);
 
   rightHandWaveNode = new TransformNode("right-hand-wave", scene);
   rightHandWaveNode.parent = handsRoot;
-  rightHandWaveNode.position = new Vector3(0.3, -0.06, 0.08);
-
-  rightHandMuzzle = new TransformNode("right-hand-muzzle", scene);
-  rightHandMuzzle.parent = rightHandWaveNode;
-  rightHandMuzzle.position = new Vector3(0.02, 0.03, 0.58);
+  rightHandWaveNode.position.copyFrom(RIGHT_HAND_ANCHOR_POS);
 
   const handModelUrl = new URL("./models/hand_low_poly.glb", import.meta.url).toString();
   try {
@@ -828,7 +844,7 @@ async function makeHandModels(): Promise<void> {
       root.position = new Vector3(-centerInParent.x, -centerInParent.y, -centerInParent.z).add(new Vector3(0, -0.08, 0.42));
     };
 
-    await loadHand("fp-left-hand", leftAnchor, false);
+    await loadHand("fp-left-hand", leftHandWaveNode, false);
     await loadHand("fp-right-hand", rightHandWaveNode, true);
   } catch (err) {
     console.warn("Could not load hand model; first-person hands disabled.", err);
@@ -836,9 +852,8 @@ async function makeHandModels(): Promise<void> {
 }
 
 function spawnCastFireball(speed = 24, life = 0.55): void {
-  const origin = rightHandMuzzle
-    ? rightHandMuzzle.getAbsolutePosition().clone()
-    : camera.position.add(camera.getDirection(new Vector3(0, -0.05, 1)).normalize().scale(0.9));
+  const origin = getCastMuzzlePosition()
+    ?? camera.position.add(camera.getDirection(new Vector3(0, -0.05, 1)).normalize().scale(0.9));
   const direction = camera.getDirection(new Vector3(0, 0, 1)).normalize();
 
   const mesh = MeshBuilder.CreateSphere("cast-fireball", { diameter: 0.24, segments: 12 }, scene);
@@ -1623,7 +1638,6 @@ function fireRune(): void {
     recoil = 0.1;
     rightHandWaveTime = 0.22;
     playFireballSound();
-    spawnCastFireball(27, 0.35);
     const aimDir = camera.getDirection(new Vector3(0, 0, 1)).normalize();
     multiplayerSync.sendShoot({
       dirX: aimDir.x,
@@ -2756,11 +2770,20 @@ function updatePlayer(dt: number): void {
     const bob = wanted.lengthSquared() > 0.001 ? Math.sin(gunBobTime) * 0.015 : 0;
     applyHandsRigTransform(bob, recoil * 0.35);
   }
+  if (leftHandWaveNode) {
+    leftHandWaveNode.position.copyFrom(LEFT_HAND_ANCHOR_POS);
+    leftHandWaveNode.rotation.x = 0;
+  }
   if (rightHandWaveNode) {
+    rightHandWaveNode.position.copyFrom(RIGHT_HAND_ANCHOR_POS);
+    rightHandWaveNode.rotation.x = 0;
+  }
+  const castHandNode = getActiveCastHandNode();
+  if (castHandNode) {
     const waveNorm = Math.max(0, Math.min(1, rightHandWaveTime / 0.22));
     const wave = Math.sin((1 - waveNorm) * Math.PI);
-    rightHandWaveNode.position.z = 0.05 + wave * 0.22 + recoil * 0.08;
-    rightHandWaveNode.rotation.x = -wave * 0.26;
+    castHandNode.position.z = 0.05 + wave * 0.22 + recoil * 0.08;
+    castHandNode.rotation.x = -wave * 0.26;
   }
 }
 
@@ -3240,9 +3263,13 @@ async function init(): Promise<void> {
   handleInputBindings();
   await loadEnemyModelTemplate();
   if (SERVER_AUTHORITATIVE_ONLY) {
-    multiplayerSync = new LegacyMultiplayerSync(scene, (status) => {
-      setCheatStatus(status);
-    });
+    multiplayerSync = new LegacyMultiplayerSync(
+      scene,
+      (status) => {
+        setCheatStatus(status);
+      },
+      () => getCastMuzzlePosition(),
+    );
     multiplayerSync.onProjectileRemoved = (pos) => fireballImpact(pos);
     void multiplayerSync.connect();
   }
