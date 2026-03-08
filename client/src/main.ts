@@ -297,6 +297,10 @@ let impactBursts: ImpactBurst[] = [];
 let effectClouds: EffectCloud[] = [];
 let infernoStream: InfernoStream | null = null;
 let enemyModelContainer: AssetContainer | null = null;
+let freezePotionTemplateMesh: Mesh | null = null;
+let freezePotionTemplatePromise: Promise<void> | null = null;
+let poisonPotionTemplateMesh: Mesh | null = null;
+let poisonPotionTemplatePromise: Promise<void> | null = null;
 let enemyModelHeight = 1;
 let enemyModelId = 0;
 let portalMesh: Mesh | null = null;
@@ -307,6 +311,7 @@ let gunBobTime = 0;
 let recoil = 0;
 let rightHandWaveTime = 0;
 let handsDebugOpen = false;
+const POTION_MODEL_FILE = "./models/4_colour_alchemist_sphere_like_potions.glb";
 const handRigDebug = {
   posX: 0,
   posY: -0.58,
@@ -1043,6 +1048,322 @@ async function loadEnemyModelTemplate(): Promise<void> {
   }
 }
 
+function materialBlueScore(material: unknown): number {
+  if (!material || typeof material !== "object") return -10;
+  const rec = material as { diffuseColor?: Color3; albedoColor?: Color3; emissiveColor?: Color3 };
+  const c = rec.albedoColor ?? rec.diffuseColor ?? rec.emissiveColor;
+  if (!c) return -5;
+  return c.b - (c.r * 0.55 + c.g * 0.45);
+}
+
+function materialGreenScore(material: unknown): number {
+  if (!material || typeof material !== "object") return -10;
+  const rec = material as { diffuseColor?: Color3; albedoColor?: Color3; emissiveColor?: Color3 };
+  const c = rec.albedoColor ?? rec.diffuseColor ?? rec.emissiveColor;
+  if (!c) return -5;
+  return c.g - (c.r * 0.5 + c.b * 0.5);
+}
+
+function materialNameIncludes(material: unknown, token: string): boolean {
+  if (!material || typeof material !== "object") return false;
+  const name = (material as { name?: string }).name;
+  if (!name) return false;
+  return name.toLowerCase().includes(token.toLowerCase());
+}
+
+function configurePotionVisualMaterial(mesh: Mesh): void {
+  const material = mesh.material as (StandardMaterial & { twoSidedLighting?: boolean }) | null;
+  if (!material) return;
+  material.backFaceCulling = false;
+  material.twoSidedLighting = true;
+}
+
+function extractFirstConnectedComponent(source: Mesh): Mesh | null {
+  const positions = source.getVerticesData("position");
+  const indices = source.getIndices();
+  if (!positions || !indices || indices.length < 3) return null;
+
+  const vertexCount = Math.floor(positions.length / 3);
+  const parent = new Int32Array(vertexCount);
+  for (let i = 0; i < vertexCount; i += 1) parent[i] = i;
+
+  const find = (x: number): number => {
+    let r = x;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[x] !== x) {
+      const p = parent[x];
+      parent[x] = r;
+      x = p;
+    }
+    return r;
+  };
+
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[rb] = ra;
+  };
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i];
+    const b = indices[i + 1];
+    const c = indices[i + 2];
+    union(a, b);
+    union(b, c);
+    union(c, a);
+  }
+
+  const componentOrder: number[] = [];
+  const componentSeen = new Set<number>();
+  const componentTriangleCounts = new Map<number, number>();
+  const componentMin = new Map<number, Vector3>();
+  const componentMax = new Map<number, Vector3>();
+  const componentCenterAccum = new Map<number, Vector3>();
+  const componentCenterCount = new Map<number, number>();
+
+  for (let vi = 0; vi < vertexCount; vi += 1) {
+    const root = find(vi);
+    const p = new Vector3(positions[vi * 3], positions[vi * 3 + 1], positions[vi * 3 + 2]);
+    const min = componentMin.get(root);
+    const max = componentMax.get(root);
+    if (!min) {
+      componentMin.set(root, p.clone());
+      componentMax.set(root, p.clone());
+      componentCenterAccum.set(root, p.clone());
+      componentCenterCount.set(root, 1);
+    } else {
+      min.x = Math.min(min.x, p.x);
+      min.y = Math.min(min.y, p.y);
+      min.z = Math.min(min.z, p.z);
+      const mx = componentMax.get(root)!;
+      mx.x = Math.max(mx.x, p.x);
+      mx.y = Math.max(mx.y, p.y);
+      mx.z = Math.max(mx.z, p.z);
+      componentCenterAccum.get(root)!.addInPlace(p);
+      componentCenterCount.set(root, (componentCenterCount.get(root) ?? 0) + 1);
+    }
+  }
+
+  const componentCenter = new Map<number, Vector3>();
+  for (const root of componentCenterAccum.keys()) {
+    const sum = componentCenterAccum.get(root)!;
+    const count = componentCenterCount.get(root) ?? 1;
+    componentCenter.set(root, sum.scale(1 / count));
+  }
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const root = find(indices[i]);
+    if (!componentSeen.has(root)) {
+      componentSeen.add(root);
+      componentOrder.push(root);
+    }
+    componentTriangleCounts.set(root, (componentTriangleCounts.get(root) ?? 0) + 1);
+  }
+
+  if (componentOrder.length <= 1) return source;
+
+  let chosenRoot = componentOrder[0];
+  let chosenTris = componentTriangleCounts.get(chosenRoot) ?? 0;
+  for (const root of componentOrder) {
+    const triCount = componentTriangleCounts.get(root) ?? 0;
+    if (triCount > chosenTris) {
+      chosenTris = triCount;
+      chosenRoot = root;
+    }
+  }
+
+  const seedMin = componentMin.get(chosenRoot) ?? Vector3.Zero();
+  const seedMax = componentMax.get(chosenRoot) ?? Vector3.Zero();
+  const seedSize = seedMax.subtract(seedMin);
+  const seedRadius = Math.max(seedSize.length() * 0.55, 0.08);
+  const seedCenter = componentCenter.get(chosenRoot) ?? Vector3.Zero();
+  const includedRoots = new Set<number>([chosenRoot]);
+  for (const root of componentOrder) {
+    if (root === chosenRoot) continue;
+    const c = componentCenter.get(root);
+    if (!c) continue;
+    if (Vector3.Distance(c, seedCenter) <= seedRadius) {
+      includedRoots.add(root);
+    }
+  }
+
+  const normals = source.getVerticesData("normal") ?? undefined;
+  const uvs = source.getVerticesData("uv") ?? undefined;
+
+  const newPositions: number[] = [];
+  const newNormals: number[] = [];
+  const newUvs: number[] = [];
+  const newIndices: number[] = [];
+  const remap = new Map<number, number>();
+
+  const mapVertex = (oldIndex: number): number => {
+    const existing = remap.get(oldIndex);
+    if (existing !== undefined) return existing;
+    const next = remap.size;
+    remap.set(oldIndex, next);
+    newPositions.push(
+      positions[oldIndex * 3],
+      positions[oldIndex * 3 + 1],
+      positions[oldIndex * 3 + 2],
+    );
+    if (normals) {
+      newNormals.push(
+        normals[oldIndex * 3],
+        normals[oldIndex * 3 + 1],
+        normals[oldIndex * 3 + 2],
+      );
+    }
+    if (uvs) {
+      newUvs.push(
+        uvs[oldIndex * 2],
+        uvs[oldIndex * 2 + 1],
+      );
+    }
+    return next;
+  };
+
+  for (let i = 0; i < indices.length; i += 3) {
+    const a = indices[i];
+    const b = indices[i + 1];
+    const c = indices[i + 2];
+    if (!includedRoots.has(find(a))) continue;
+    newIndices.push(mapVertex(a), mapVertex(b), mapVertex(c));
+  }
+
+  if (newIndices.length === 0) return source;
+
+  const out = new Mesh(`${source.name}-single`, source.getScene());
+  const data = new VertexData();
+  data.positions = newPositions;
+  data.indices = newIndices;
+  if (newNormals.length > 0) data.normals = newNormals;
+  else {
+    const computedNormals: number[] = [];
+    VertexData.ComputeNormals(newPositions, newIndices, computedNormals);
+    data.normals = computedNormals;
+  }
+  if (newUvs.length > 0) data.uvs = newUvs;
+  data.applyToMesh(out, true);
+  out.material = source.material;
+  out.isPickable = false;
+  configurePotionVisualMaterial(out);
+  return out;
+}
+
+async function loadFreezePotionTemplate(): Promise<void> {
+  if (freezePotionTemplateMesh) return;
+  if (freezePotionTemplatePromise) return freezePotionTemplatePromise;
+
+  freezePotionTemplatePromise = (async () => {
+    const potionModelUrl = new URL(POTION_MODEL_FILE, import.meta.url).toString();
+    try {
+      const imported = await SceneLoader.ImportMeshAsync("", "", potionModelUrl, scene);
+      const candidates = imported.meshes.filter(
+        (m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0,
+      );
+      if (candidates.length === 0) {
+        throw new Error(`No usable meshes in ${POTION_MODEL_FILE}`);
+      }
+
+      let chosen = candidates.find((c) => materialNameIncludes(c.material, "blue")) ?? candidates[0];
+      let bestScore = -9999;
+      for (const candidate of candidates) {
+        const score = materialBlueScore(candidate.material) + (materialNameIncludes(candidate.material, "blue") ? 1000 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          chosen = candidate;
+        }
+      }
+
+      for (const candidate of candidates) {
+        if (candidate !== chosen) candidate.dispose(false, false);
+      }
+
+      const single = extractFirstConnectedComponent(chosen);
+      if (single && single !== chosen) {
+        chosen.dispose(false, false);
+        chosen = single;
+      }
+
+      chosen.setParent(null);
+      chosen.computeWorldMatrix(true);
+      chosen.bakeCurrentTransformIntoVertices();
+      chosen.position.setAll(0);
+      chosen.rotation.setAll(0);
+      chosen.scaling.setAll(1);
+      chosen.isVisible = false;
+      chosen.setEnabled(false);
+      chosen.isPickable = false;
+      configurePotionVisualMaterial(chosen);
+      freezePotionTemplateMesh = chosen;
+    } catch (err) {
+      console.warn(`Could not load potion model ${POTION_MODEL_FILE}; freeze throw uses sphere fallback.`, err);
+      freezePotionTemplateMesh = null;
+    } finally {
+      freezePotionTemplatePromise = null;
+    }
+  })();
+
+  return freezePotionTemplatePromise;
+}
+
+async function loadPoisonPotionTemplate(): Promise<void> {
+  if (poisonPotionTemplateMesh) return;
+  if (poisonPotionTemplatePromise) return poisonPotionTemplatePromise;
+
+  poisonPotionTemplatePromise = (async () => {
+    const potionModelUrl = new URL(POTION_MODEL_FILE, import.meta.url).toString();
+    try {
+      const imported = await SceneLoader.ImportMeshAsync("", "", potionModelUrl, scene);
+      const candidates = imported.meshes.filter(
+        (m): m is Mesh => m instanceof Mesh && m.getTotalVertices() > 0,
+      );
+      if (candidates.length === 0) {
+        throw new Error(`No usable meshes in ${POTION_MODEL_FILE}`);
+      }
+
+      let chosen = candidates.find((c) => materialNameIncludes(c.material, "green")) ?? candidates[0];
+      let bestScore = -9999;
+      for (const candidate of candidates) {
+        const score = materialGreenScore(candidate.material) + (materialNameIncludes(candidate.material, "green") ? 1000 : 0);
+        if (score > bestScore) {
+          bestScore = score;
+          chosen = candidate;
+        }
+      }
+
+      for (const candidate of candidates) {
+        if (candidate !== chosen) candidate.dispose(false, false);
+      }
+
+      const single = extractFirstConnectedComponent(chosen);
+      if (single && single !== chosen) {
+        chosen.dispose(false, false);
+        chosen = single;
+      }
+
+      chosen.setParent(null);
+      chosen.computeWorldMatrix(true);
+      chosen.bakeCurrentTransformIntoVertices();
+      chosen.position.setAll(0);
+      chosen.rotation.setAll(0);
+      chosen.scaling.setAll(1);
+      chosen.isVisible = false;
+      chosen.setEnabled(false);
+      chosen.isPickable = false;
+      configurePotionVisualMaterial(chosen);
+      poisonPotionTemplateMesh = chosen;
+    } catch (err) {
+      console.warn(`Could not load potion model ${POTION_MODEL_FILE}; poison throw uses sphere fallback.`, err);
+      poisonPotionTemplateMesh = null;
+    } finally {
+      poisonPotionTemplatePromise = null;
+    }
+  })();
+
+  return poisonPotionTemplatePromise;
+}
+
 function instantiateEnemyModel(type: EnemyType, pos: Vector3): { root: TransformNode; runAnimation: AnimationGroup | null } | null {
   if (!enemyModelContainer) return null;
   const id = enemyModelId++;
@@ -1773,6 +2094,77 @@ function freezePotionImpact(at: Vector3): void {
   requestAnimationFrame(fadeTick);
 }
 
+function poisonPotionImpact(at: Vector3): void {
+  const burst = new ParticleSystem("poison-burst", 900, scene);
+  burst.particleTexture = smokeParticleTex;
+  burst.emitter = at.clone();
+  burst.minEmitBox = new Vector3(-0.2, 0.02, -0.2);
+  burst.maxEmitBox = new Vector3(0.2, 0.28, 0.2);
+  burst.color1 = new Color4(0.25, 0.85, 0.2, 0.7);
+  burst.color2 = new Color4(0.15, 0.65, 0.14, 0.6);
+  burst.colorDead = new Color4(0.08, 0.3, 0.08, 0);
+  burst.minSize = 0.5;
+  burst.maxSize = 1.6;
+  burst.minLifeTime = 0.55;
+  burst.maxLifeTime = 1.4;
+  burst.emitRate = 850;
+  burst.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  burst.gravity = new Vector3(0, 0.2, 0);
+  burst.direction1 = new Vector3(-1.6, 0.2, -1.6);
+  burst.direction2 = new Vector3(1.6, 1.3, 1.6);
+  burst.minEmitPower = 0.7;
+  burst.maxEmitPower = 2.2;
+  burst.updateSpeed = 0.014;
+  burst.targetStopDuration = 0.12;
+  burst.start();
+
+  const haze = new ParticleSystem("poison-haze", 560, scene);
+  haze.particleTexture = smokeParticleTex;
+  haze.emitter = at.clone();
+  haze.minEmitBox = new Vector3(-1.3, 0.0, -1.3);
+  haze.maxEmitBox = new Vector3(1.3, 0.45, 1.3);
+  haze.color1 = new Color4(0.22, 0.75, 0.16, 0.35);
+  haze.color2 = new Color4(0.12, 0.5, 0.1, 0.3);
+  haze.colorDead = new Color4(0.08, 0.28, 0.08, 0);
+  haze.minSize = 1.0;
+  haze.maxSize = 2.4;
+  haze.minLifeTime = 0.9;
+  haze.maxLifeTime = 2.0;
+  haze.emitRate = 320;
+  haze.blendMode = ParticleSystem.BLENDMODE_STANDARD;
+  haze.gravity = new Vector3(0, 0.22, 0);
+  haze.direction1 = new Vector3(-0.7, 0.08, -0.7);
+  haze.direction2 = new Vector3(0.7, 0.55, 0.7);
+  haze.minEmitPower = 0.08;
+  haze.maxEmitPower = 0.45;
+  haze.updateSpeed = 0.015;
+  haze.targetStopDuration = 0.18;
+  haze.start();
+
+  const light = new PointLight("poison-flash", at.clone(), scene);
+  light.diffuse = new Color3(0.3, 0.95, 0.2);
+  light.intensity = 3.2;
+  light.range = 7;
+
+  effectClouds.push({
+    systems: [burst, haze],
+    life: 1.8,
+    cleanupAt: -2.6,
+    stopped: false,
+  });
+
+  const fadeStart = performance.now();
+  const fadeDuration = 520;
+  const fadeTick = (): void => {
+    const elapsed = performance.now() - fadeStart;
+    const t = Math.max(0, 1 - elapsed / fadeDuration);
+    light.intensity = 3.2 * t;
+    if (t > 0) requestAnimationFrame(fadeTick);
+    else light.dispose();
+  };
+  requestAnimationFrame(fadeTick);
+}
+
 function createPoisonCloudVisual(at: Vector3): PoisonCloudVisual {
   const core = new ParticleSystem("poison-core", 900, scene);
   core.particleTexture = smokeParticleTex;
@@ -1859,17 +2251,43 @@ function syncPoisonCloudVisuals(): void {
   }
 }
 
-function throwPotionProjectile(kind: "freeze", chargeSeconds = 0): void {
-  if (potionCooldown > 0 || gameOver || victory) return;
+function throwPotionProjectile(kind: "freeze" | "poison", chargeSeconds = 0): boolean {
+  if (potionCooldown > 0 || gameOver || victory) return false;
   potionCooldown = 0.45;
   updateHud();
 
   const mesh = MeshBuilder.CreateSphere("potion-proj", { diameter: 0.22, segments: 10 }, scene);
-  const mat = new StandardMaterial("potion-proj-mat", scene);
-  mat.diffuseColor = new Color3(0.55, 0.8, 0.95);
-  mat.emissiveColor = new Color3(0.15, 0.3, 0.5);
-  mesh.material = mat;
+  const template = kind === "freeze" ? freezePotionTemplateMesh : poisonPotionTemplateMesh;
+  if (template) {
+    const colliderMat = new StandardMaterial("potion-proj-collider-mat", scene);
+    colliderMat.alpha = 0.001;
+    colliderMat.diffuseColor = new Color3(0, 0, 0);
+    colliderMat.specularColor = new Color3(0, 0, 0);
+    mesh.material = colliderMat;
+
+    const visual = template.clone(`potion-proj-${kind}`);
+    if (visual) {
+      visual.setEnabled(true);
+      visual.isVisible = true;
+      visual.parent = mesh;
+      visual.position.setAll(0);
+      visual.rotation.setAll(0);
+      visual.scaling.setAll(0.1);
+      visual.isPickable = false;
+    }
+  } else {
+    const mat = new StandardMaterial("potion-proj-mat", scene);
+    if (kind === "freeze") {
+      mat.diffuseColor = new Color3(0.55, 0.8, 0.95);
+      mat.emissiveColor = new Color3(0.15, 0.3, 0.5);
+    } else {
+      mat.diffuseColor = new Color3(0.4, 0.86, 0.45);
+      mat.emissiveColor = new Color3(0.08, 0.24, 0.1);
+    }
+    mesh.material = mat;
+  }
   mesh.position = camera.position.add(camera.getDirection(new Vector3(0, -0.03, 1)).normalize().scale(0.85));
+  mesh.isPickable = false;
 
   const charge01 = Math.max(0, Math.min(1, chargeSeconds / 1.25));
   const throwSpeed = 8.2 + charge01 * 13.8;
@@ -1881,6 +2299,7 @@ function throwPotionProjectile(kind: "freeze", chargeSeconds = 0): void {
     bouncesRemaining: 5,
     kind,
   });
+  return true;
 }
 
 function spawnEnemyShot(enemy: EnemyEntity): void {
@@ -2449,7 +2868,14 @@ function updateProjectiles(dt: number): void {
       const at = proj.mesh.position.clone();
       proj.mesh.dispose();
       potionProjectiles.splice(i, 1);
-      if (proj.kind === "freeze") freezePotionImpact(at);
+      if (proj.kind === "freeze") {
+        freezePotionImpact(at);
+      } else {
+        poisonPotionImpact(at);
+        if (multiplayerSync) {
+          multiplayerSync.sendUsePotion("poison", at.x, at.z);
+        }
+      }
     }
   }
 
@@ -2833,15 +3259,23 @@ function useSelectedPotion(): void {
   if (!multiplayerSync) return;
   const kind = POTION_KINDS[selectedPotionIndex];
   if (potionInventory[kind] <= 0) return;
-  if (kind === "poison" || kind === "freeze") {
+  if (kind === "poison") {
+    const thrown = throwPotionProjectile(kind, 0.5);
+    if (!thrown) return;
+    potionInventory.poison = Math.max(0, potionInventory.poison - 1);
+    updateHud();
+    return;
+  }
+
+  if (kind === "freeze") {
     // Compute target position for thrown potions
     const THROW_DIST = 8;
     const lookDir = camera.getDirection(new Vector3(0, 0, 1)).normalize();
     const targetX = camera.position.x + lookDir.x * THROW_DIST;
     const targetZ = camera.position.z + lookDir.z * THROW_DIST;
     multiplayerSync.sendUsePotion(kind, targetX, targetZ);
-    // Launch cosmetic projectile for freeze only (poison uses server-synced cloud)
-    if (kind === "freeze") throwPotionProjectile(kind, 0.5);
+    // Freeze remains server-timed but uses local throw visuals.
+    void throwPotionProjectile(kind, 0.5);
   } else {
     multiplayerSync.sendUsePotion(kind);
   }
@@ -3153,6 +3587,8 @@ async function init(): Promise<void> {
   applyMinimapSize();
   setupHandsDebugUi();
   await makeHandModels();
+  await loadFreezePotionTemplate();
+  await loadPoisonPotionTemplate();
   handleInputBindings();
   await loadEnemyModelTemplate();
   if (SERVER_AUTHORITATIVE_ONLY) {

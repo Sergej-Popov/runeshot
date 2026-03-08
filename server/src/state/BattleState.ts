@@ -36,11 +36,11 @@ export class Player extends Schema {
     this.hp = 100;
     this.mana = 90;
     this.respawnIn = 0;
-    this.potionHealth = 0;
-    this.potionMana = 0;
-    this.potionPoison = 0;
-    this.potionSpeed = 0;
-    this.potionFreeze = 0;
+    this.potionHealth = 1;
+    this.potionMana = 1;
+    this.potionPoison = 1;
+    this.potionSpeed = 1;
+    this.potionFreeze = 1;
     this.poisoned = false;
     this.speedBoosted = false;
     this.frozen = false;

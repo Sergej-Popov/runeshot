@@ -52,7 +52,7 @@ export type PotionProjectile = {
   velocity: Vector3;
   life: number;
   bouncesRemaining: number;
-  kind: "freeze";
+  kind: "freeze" | "poison";
 };
 
 export type CastProjectile = {
