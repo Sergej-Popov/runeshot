@@ -37,6 +37,19 @@ import {
   enemyEl,
   healthBarEl,
   healthTextEl,
+  handsDebugPanelEl,
+  handPosXEl,
+  handPosXValEl,
+  handPosYEl,
+  handPosYValEl,
+  handPosZEl,
+  handPosZValEl,
+  handRotXEl,
+  handRotXValEl,
+  handRotYEl,
+  handRotYValEl,
+  handRotZEl,
+  handRotZValEl,
   levelEl,
   manaBarEl,
   manaTextEl,
@@ -128,6 +141,13 @@ type PotionProjectile = {
   life: number;
   bouncesRemaining: number;
   kind: "freeze";
+};
+
+type CastProjectile = {
+  mesh: Mesh;
+  light: PointLight;
+  velocity: Vector3;
+  life: number;
 };
 
 type ImpactBurst = {
@@ -377,6 +397,7 @@ let enemies: EnemyEntity[] = [];
 let enemyShots: EnemyShot[] = [];
 let pickups: Pickup[] = [];
 let potionProjectiles: PotionProjectile[] = [];
+let castProjectiles: CastProjectile[] = [];
 let impactBursts: ImpactBurst[] = [];
 let effectClouds: EffectCloud[] = [];
 let infernoStream: InfernoStream | null = null;
@@ -384,10 +405,21 @@ let enemyModelContainer: AssetContainer | null = null;
 let enemyModelHeight = 1;
 let enemyModelId = 0;
 let portalMesh: Mesh | null = null;
-let gunRoot: TransformNode | null = null;
-let gunSlide: Mesh | null = null;
+let handsRoot: TransformNode | null = null;
+let rightHandWaveNode: TransformNode | null = null;
+let rightHandMuzzle: TransformNode | null = null;
 let gunBobTime = 0;
 let recoil = 0;
+let rightHandWaveTime = 0;
+let handsDebugOpen = false;
+const handRigDebug = {
+  posX: 0,
+  posY: -0.58,
+  posZ: 1.5,
+  rotX: 1.12,
+  rotY: 0,
+  rotZ: 3.16,
+};
 
 let currentLevel = 0;
 let health = 100;
@@ -440,7 +472,7 @@ function tryAcquirePointerLock(): void {
   if (document.pointerLockElement === canvas) return;
   const req = canvas.requestPointerLock();
   if (req && typeof req.catch === "function") {
-    req.catch(() => {});
+    req.catch(() => { });
   }
 }
 
@@ -667,28 +699,167 @@ function drawMinimap(): void {
   minimapCtx.stroke();
 }
 
-function makeGunModel(): void {
-  gunRoot = new TransformNode("gun-root", scene);
-  gunRoot.parent = camera;
-  gunRoot.position = new Vector3(0.34, -0.97, 1.1);
+function updateHandsDebugValueLabels(): void {
+  handPosXValEl.textContent = handRigDebug.posX.toFixed(2);
+  handPosYValEl.textContent = handRigDebug.posY.toFixed(2);
+  handPosZValEl.textContent = handRigDebug.posZ.toFixed(2);
+  handRotXValEl.textContent = handRigDebug.rotX.toFixed(2);
+  handRotYValEl.textContent = handRigDebug.rotY.toFixed(2);
+  handRotZValEl.textContent = handRigDebug.rotZ.toFixed(2);
+}
 
-  const gunMat = new StandardMaterial("gun-mat", scene);
-  gunMat.diffuseColor = new Color3(0.2, 0.2, 0.22);
+function syncHandsDebugControlsFromState(): void {
+  handPosXEl.value = handRigDebug.posX.toString();
+  handPosYEl.value = handRigDebug.posY.toString();
+  handPosZEl.value = handRigDebug.posZ.toString();
+  handRotXEl.value = handRigDebug.rotX.toString();
+  handRotYEl.value = handRigDebug.rotY.toString();
+  handRotZEl.value = handRigDebug.rotZ.toString();
+  updateHandsDebugValueLabels();
+}
 
-  const body = MeshBuilder.CreateBox("gun-body", { width: 0.38, height: 0.2, depth: 0.9 }, scene);
-  body.parent = gunRoot;
-  body.material = gunMat;
+function setupHandsDebugUi(): void {
+  const bindRange = (inputEl: HTMLInputElement, assign: (value: number) => void): void => {
+    inputEl.addEventListener("input", () => {
+      const value = Number.parseFloat(inputEl.value);
+      if (!Number.isFinite(value)) return;
+      assign(value);
+      updateHandsDebugValueLabels();
+      applyHandsRigTransform(0, recoil * 0.35);
+    });
+  };
 
-  const barrel = MeshBuilder.CreateBox("gun-barrel", { width: 0.18, height: 0.14, depth: 0.6 }, scene);
-  barrel.parent = gunRoot;
-  barrel.position = new Vector3(0, 0.03, 0.7);
-  barrel.material = gunMat;
-  gunSlide = barrel;
+  bindRange(handPosXEl, (value) => { handRigDebug.posX = value; });
+  bindRange(handPosYEl, (value) => { handRigDebug.posY = value; });
+  bindRange(handPosZEl, (value) => { handRigDebug.posZ = value; });
+  bindRange(handRotXEl, (value) => { handRigDebug.rotX = value; });
+  bindRange(handRotYEl, (value) => { handRigDebug.rotY = value; });
+  bindRange(handRotZEl, (value) => { handRigDebug.rotZ = value; });
 
-  const rear = MeshBuilder.CreateBox("gun-rear", { width: 0.24, height: 0.12, depth: 0.18 }, scene);
-  rear.parent = gunRoot;
-  rear.position = new Vector3(0, 0.06, -0.34);
-  rear.material = gunMat;
+  const swallow = (e: Event): void => e.stopPropagation();
+  handsDebugPanelEl.addEventListener("mousedown", swallow);
+  handsDebugPanelEl.addEventListener("mouseup", swallow);
+  handsDebugPanelEl.addEventListener("click", swallow);
+  handsDebugPanelEl.addEventListener("wheel", swallow);
+
+  syncHandsDebugControlsFromState();
+}
+
+function toggleHandsDebugPanel(): void {
+  handsDebugOpen = !handsDebugOpen;
+  handsDebugPanelEl.classList.toggle("hidden", !handsDebugOpen);
+}
+
+function applyHandsRigTransform(bobOffset = 0, recoilOffset = 0): void {
+  if (!handsRoot) return;
+  handsRoot.position.set(
+    handRigDebug.posX,
+    handRigDebug.posY + bobOffset - recoilOffset,
+    handRigDebug.posZ,
+  );
+  handsRoot.rotation.set(handRigDebug.rotX, handRigDebug.rotY, handRigDebug.rotZ);
+}
+
+async function makeHandModels(): Promise<void> {
+  if (handsRoot) handsRoot.dispose(false, true);
+
+  handsRoot = new TransformNode("hands-root", scene);
+  handsRoot.parent = camera;
+  applyHandsRigTransform();
+
+  const leftAnchor = new TransformNode("left-hand-anchor", scene);
+  leftAnchor.parent = handsRoot;
+  leftAnchor.position = new Vector3(-0.3, -0.06, 0.08);
+
+  rightHandWaveNode = new TransformNode("right-hand-wave", scene);
+  rightHandWaveNode.parent = handsRoot;
+  rightHandWaveNode.position = new Vector3(0.3, -0.06, 0.08);
+
+  rightHandMuzzle = new TransformNode("right-hand-muzzle", scene);
+  rightHandMuzzle.parent = rightHandWaveNode;
+  rightHandMuzzle.position = new Vector3(0.02, 0.03, 0.58);
+
+  const handModelUrl = new URL("./models/hand_low_poly.glb", import.meta.url).toString();
+  try {
+    const loadHand = async (name: string, parent: TransformNode, mirrored: boolean): Promise<void> => {
+      const imported = await SceneLoader.ImportMeshAsync("", "", handModelUrl, scene);
+      const root = new TransformNode(`${name}-root`, scene);
+      root.parent = parent;
+      const visibleHandMat = new StandardMaterial(`${name}-mat`, scene);
+      visibleHandMat.diffuseColor = new Color3(0.92, 0.74, 0.58);
+      visibleHandMat.emissiveColor = new Color3(0.1, 0.06, 0.03);
+      visibleHandMat.specularColor = new Color3(0.12, 0.08, 0.05);
+      visibleHandMat.backFaceCulling = false;
+      visibleHandMat.alpha = 1;
+
+      const allNodes: Node[] = [...imported.transformNodes, ...imported.meshes];
+      for (const node of allNodes) {
+        if (!node.parent || !allNodes.includes(node.parent)) node.parent = root;
+      }
+
+      const meshes = root.getChildMeshes(false);
+      if (meshes.length === 0) {
+        throw new Error("No meshes found in hand_low_poly.glb");
+      }
+
+      for (const mesh of meshes) {
+        mesh.isPickable = false;
+        mesh.isVisible = true;
+        mesh.setEnabled(true);
+        mesh.alwaysSelectAsActiveMesh = true;
+        mesh.renderingGroupId = 1;
+        mesh.material = visibleHandMat;
+      }
+
+      root.computeWorldMatrix(true);
+      let bounds = root.getHierarchyBoundingVectors(true);
+      const height = Math.max(0.0001, bounds.max.y - bounds.min.y);
+      const targetHeight = 0.55;
+      const baseScale = targetHeight / height;
+      root.scaling.setAll(baseScale);
+      if (mirrored) root.scaling.x *= -1;
+
+      root.rotation = new Vector3(0.22, mirrored ? Math.PI * 1.12 : Math.PI * 0.88, mirrored ? -0.08 : 0.08);
+
+      root.computeWorldMatrix(true);
+      bounds = root.getHierarchyBoundingVectors(true);
+      const centerWorld = bounds.min.add(bounds.max).scale(0.5);
+      const centerInParent = Vector3.TransformCoordinates(centerWorld, parent.getWorldMatrix().clone().invert());
+      root.position = new Vector3(-centerInParent.x, -centerInParent.y, -centerInParent.z).add(new Vector3(0, -0.08, 0.42));
+    };
+
+    await loadHand("fp-left-hand", leftAnchor, false);
+    await loadHand("fp-right-hand", rightHandWaveNode, true);
+  } catch (err) {
+    console.warn("Could not load hand model; first-person hands disabled.", err);
+  }
+}
+
+function spawnCastFireball(speed = 24, life = 0.55): void {
+  const origin = rightHandMuzzle
+    ? rightHandMuzzle.getAbsolutePosition().clone()
+    : camera.position.add(camera.getDirection(new Vector3(0, -0.05, 1)).normalize().scale(0.9));
+  const direction = camera.getDirection(new Vector3(0, 0, 1)).normalize();
+
+  const mesh = MeshBuilder.CreateSphere("cast-fireball", { diameter: 0.24, segments: 12 }, scene);
+  const mat = new StandardMaterial("cast-fireball-mat", scene);
+  mat.emissiveColor = new Color3(1.0, 0.58, 0.14);
+  mat.diffuseColor = new Color3(0.22, 0.08, 0.02);
+  mesh.material = mat;
+  mesh.position.copyFrom(origin);
+  mesh.isPickable = false;
+
+  const light = new PointLight("cast-fireball-light", origin.clone(), scene);
+  light.diffuse = new Color3(1.0, 0.56, 0.2);
+  light.intensity = 2.2;
+  light.range = 5.5;
+
+  castProjectiles.push({
+    mesh,
+    light,
+    velocity: direction.scale(speed),
+    life,
+  });
 }
 
 function stopInfernoStream(): void {
@@ -822,6 +993,11 @@ function disposeLevel(): void {
   enemyShots = [];
   for (const proj of potionProjectiles) proj.mesh.dispose();
   potionProjectiles = [];
+  for (const proj of castProjectiles) {
+    proj.light.dispose();
+    proj.mesh.dispose();
+  }
+  castProjectiles = [];
   for (const burst of impactBursts) {
     for (const sys of burst.systems) sys.dispose(false);
     burst.light.dispose();
@@ -1445,7 +1621,9 @@ function fireRune(): void {
     mana -= 2;
     fireCooldown = 0.22;
     recoil = 0.1;
+    rightHandWaveTime = 0.22;
     playFireballSound();
+    spawnCastFireball(27, 0.35);
     const aimDir = camera.getDirection(new Vector3(0, 0, 1)).normalize();
     multiplayerSync.sendShoot({
       dirX: aimDir.x,
@@ -1486,6 +1664,7 @@ function fireRune(): void {
     damage = 4;
     splash = 2.2;
     recoil = 0.17;
+    rightHandWaveTime = 0.22;
     playLightningBoltSound();
   } else if (runeMode === "ice-shard") {
     if (mana < 2) return;
@@ -1493,6 +1672,7 @@ function fireRune(): void {
     fireCooldown = 0.055;
     damage = 1;
     recoil = 0.04;
+    rightHandWaveTime = 0.18;
     playFireballSound();
   } else {
     if (mana < 2) return;
@@ -1500,7 +1680,9 @@ function fireRune(): void {
     fireCooldown = 0.18;
     damage = 1;
     recoil = 0.09;
+    rightHandWaveTime = 0.22;
     playFireballSound();
+    spawnCastFireball();
   }
 
   const ray = camera.getForwardRay(60);
@@ -2253,9 +2435,9 @@ function updateEnemies(dt: number): void {
 
     const moveScale =
       enemy.aiMode === "retreat" ? 1.15 :
-      enemy.aiMode === "flank" ? 1.08 :
-      enemy.aiMode === "hide" ? 0.9 :
-      enemy.aiMode === "roam" ? 0.75 : 1.0;
+        enemy.aiMode === "flank" ? 1.08 :
+          enemy.aiMode === "hide" ? 0.9 :
+            enemy.aiMode === "roam" ? 0.75 : 1.0;
     const moved = tryMoveEnemy(enemy, moveDir, enemy.speed * moveScale * dt);
     setEnemyRunAnimationState(enemy, moved);
 
@@ -2367,6 +2549,25 @@ function updateProjectiles(dt: number): void {
       proj.mesh.dispose();
       potionProjectiles.splice(i, 1);
       if (proj.kind === "freeze") freezePotionImpact(at);
+    }
+  }
+
+  for (let i = castProjectiles.length - 1; i >= 0; i -= 1) {
+    const proj = castProjectiles[i];
+    proj.mesh.position.addInPlace(proj.velocity.scale(dt));
+    proj.mesh.rotation.y += dt * 4.5;
+    proj.life -= dt;
+    proj.light.position.copyFrom(proj.mesh.position);
+
+    const map = worldToMap(proj.mesh.position);
+    const floor = floorHeightAtMap(map.x, map.y);
+    const hitWall = isWallAt(map.x, map.y);
+    const hitFloor = proj.mesh.position.y <= floor + 0.08;
+    if (proj.life <= 0 || hitWall || hitFloor) {
+      if (!multiplayerSync) fireballImpact(proj.mesh.position.clone());
+      proj.light.dispose();
+      proj.mesh.dispose();
+      castProjectiles.splice(i, 1);
     }
   }
 
@@ -2550,10 +2751,16 @@ function updatePlayer(dt: number): void {
   if (input.MouseLeft && !cheatOpen && fireCooldown <= 0) fireRune();
 
   recoil = Math.max(0, recoil - dt * 0.75);
-  if (gunRoot) {
+  if (rightHandWaveTime > 0) rightHandWaveTime = Math.max(0, rightHandWaveTime - dt);
+  if (handsRoot) {
     const bob = wanted.lengthSquared() > 0.001 ? Math.sin(gunBobTime) * 0.015 : 0;
-    gunRoot.position.y = -0.97 + bob - recoil * 0.65;
-    if (gunSlide) gunSlide.position.z = 0.7 - recoil * 0.45;
+    applyHandsRigTransform(bob, recoil * 0.35);
+  }
+  if (rightHandWaveNode) {
+    const waveNorm = Math.max(0, Math.min(1, rightHandWaveTime / 0.22));
+    const wave = Math.sin((1 - waveNorm) * Math.PI);
+    rightHandWaveNode.position.z = 0.05 + wave * 0.22 + recoil * 0.08;
+    rightHandWaveNode.rotation.x = -wave * 0.26;
   }
 }
 
@@ -2741,6 +2948,12 @@ function handleInputBindings(): void {
     if (e.code === "Backquote") {
       e.preventDefault();
       toggleCheatConsole();
+      return;
+    }
+
+    if (e.code === "F9") {
+      e.preventDefault();
+      toggleHandsDebugPanel();
       return;
     }
 
@@ -3022,7 +3235,8 @@ function gameLoop(now: number): void {
 
 async function init(): Promise<void> {
   applyMinimapSize();
-  makeGunModel();
+  setupHandsDebugUi();
+  await makeHandModels();
   handleInputBindings();
   await loadEnemyModelTemplate();
   if (SERVER_AUTHORITATIVE_ONLY) {

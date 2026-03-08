@@ -40,7 +40,7 @@
       </div>
     </div>
     <div class="help">
-      Move: WASD | Sprint: Hold Shift | Turn: Mouse / Arrow Keys | Jump: Space | Shoot: Hold Left Click | Switch Rune: E | Select Potion: Scroll Wheel | Use Potion: Tab / Middle Click | Minimap Size: N | Cheats: ` (Backtick) | Level 4: Jump Platforms | Music: M | Restart: R
+      Move: WASD | Sprint: Hold Shift | Turn: Mouse / Arrow Keys | Jump: Space | Shoot: Hold Left Click | Switch Rune: E | Select Potion: Scroll Wheel | Use Potion: Tab / Middle Click | Minimap Size: N | Hands Debug: F9 | Cheats: ` (Backtick) | Level 4: Jump Platforms | Music: M | Restart: R
     </div>
     <div id="cheatBadges" class="cheat-badges hidden"></div>
   </div>
@@ -89,6 +89,25 @@
       <img src="/sprites/potions/freeze.png" alt="Freeze" class="potion-icon" draggable="false">
       <span class="potion-count">0</span>
       <span class="potion-label">Freeze</span>
+    </div>
+  </div>
+
+  <div id="handsDebugPanel" class="hands-debug hidden">
+    <div class="hands-debug-title">Hands Rig Debug</div>
+    <div class="hands-debug-grid">
+      <label>Pos X <span id="handPosXVal">0.00</span></label>
+      <input id="handPosX" type="range" min="-1.5" max="1.5" step="0.01" value="0">
+      <label>Pos Y <span id="handPosYVal">-0.88</span></label>
+      <input id="handPosY" type="range" min="-2" max="0.8" step="0.01" value="-0.88">
+      <label>Pos Z <span id="handPosZVal">1.50</span></label>
+      <input id="handPosZ" type="range" min="0.1" max="2.5" step="0.01" value="1.5">
+
+      <label>Rot X <span id="handRotXVal">4.60</span></label>
+      <input id="handRotX" type="range" min="-6.28" max="6.28" step="0.01" value="4.6">
+      <label>Rot Y <span id="handRotYVal">0.00</span></label>
+      <input id="handRotY" type="range" min="-6.28" max="6.28" step="0.01" value="0">
+      <label>Rot Z <span id="handRotZVal">3.10</span></label>
+      <input id="handRotZ" type="range" min="-6.28" max="6.28" step="0.01" value="3.1">
     </div>
   </div>
 

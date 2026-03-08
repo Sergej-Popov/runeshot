@@ -337,6 +337,45 @@ body {
   margin-bottom: 4px;
 }
 
+.hands-debug {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 7;
+  width: min(340px, 92vw);
+  background: #101318ee;
+  border: 1px solid #4d617d;
+  border-radius: 10px;
+  padding: 10px;
+  box-shadow: 0 10px 26px #00000090;
+  pointer-events: auto;
+}
+
+.hands-debug-title {
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  color: #95c2ff;
+  margin-bottom: 8px;
+}
+
+.hands-debug-grid {
+  display: grid;
+  gap: 4px;
+}
+
+.hands-debug label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.72rem;
+  color: #d6e7ff;
+}
+
+.hands-debug input[type="range"] {
+  width: 100%;
+  margin: 0 0 4px;
+}
+
 /* ── Potion Belt ── */
 .potion-belt {
   position: fixed;
